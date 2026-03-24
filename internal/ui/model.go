@@ -825,6 +825,8 @@ func (m Model) updateReader(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "h":
 		m.state = stateInbox
 		return m, nil
+	case "e":
+		return m.openInNeovim()
 	case "O":
 		return m.openInExternalViewer()
 	case "r":
@@ -868,6 +870,33 @@ func (m Model) openInExternalViewer() (tea.Model, tea.Cmd) {
 	f.Close()
 
 	cmd := exec.Command(browser, tmpPath)
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		os.Remove(tmpPath)
+		if err != nil {
+			return errMsg{err}
+		}
+		return nil
+	})
+}
+
+// openInNeovim opens the current email's markdown body in nvim -R (read-only)
+// so the user can search, copy, and navigate with full vim motions.
+func (m Model) openInNeovim() (tea.Model, tea.Cmd) {
+	if m.openEmail == nil || m.openBody == "" {
+		return m, nil
+	}
+
+	// Build a header block so the file is self-contained in neovim.
+	e := m.openEmail
+	header := fmt.Sprintf("---\nFrom:    %s\nTo:      %s\nSubject: %s\nDate:    %s\n---\n\n",
+		e.From, e.To, e.Subject, e.Date.Format("Mon, 02 Jan 2006 15:04:05 -0700"))
+
+	cmd, tmpPath, err := editor.View(header + m.openBody)
+	if err != nil {
+		m.status = "nvim: " + err.Error()
+		m.isError = true
+		return m, nil
+	}
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
 		os.Remove(tmpPath)
 		if err != nil {
@@ -1133,6 +1162,7 @@ func (m Model) viewHelp() string {
 			{"R", "reload / refresh folder"},
 			{"r", "reply  (from reader)"},
 			{"c", "compose new email"},
+			{"e  (reader)", "open in neovim -R (read, search, copy)"},
 			{"O  (reader)", "open in browser (w3m / $BROWSER)"},
 			{"a", "switch account  (if multiple configured)"},
 		}},

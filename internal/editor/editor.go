@@ -46,6 +46,33 @@ func Compose(prelude string) (string, error) {
 	return string(content), nil
 }
 
+// View writes content to a temp .md file and opens it with nvim -R (read-only).
+// The caller is responsible for suspending/resuming the bubbletea program via
+// tea.ExecProcess. Returns the command and the temp file path (caller removes it).
+func View(content string) (*exec.Cmd, string, error) {
+	f, err := os.CreateTemp("", "neomd-read-*.md")
+	if err != nil {
+		return nil, "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := f.Name()
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return nil, "", fmt.Errorf("write file: %w", err)
+	}
+	f.Close()
+
+	editorBin := os.Getenv("EDITOR")
+	if editorBin == "" {
+		editorBin = "nvim"
+	}
+	cmd := exec.Command(editorBin, "-R", tmpPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd, tmpPath, nil
+}
+
 // Prelude builds the comment header shown at the top of a new compose buffer.
 func Prelude(to, subject string) string {
 	return fmt.Sprintf("<!-- To: %s -->\n<!-- Subject: %s -->\n\n", to, subject)

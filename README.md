@@ -149,6 +149,7 @@ All screener and move actions below apply to **all marked emails**, or just the 
 | `R` | Reload / refresh folder |
 | `r` | Reply (from reader) |
 | `c` | Compose new email |
+| `e` | Open in `$EDITOR` (read-only) — search, copy, vim motions (from reader) |
 | `O` | Open in browser — `$BROWSER` or `w3m` (from reader) |
 | `a` | Switch account (if multiple configured) |
 | `/` | Filter emails |
@@ -197,6 +198,16 @@ make help     print this list
 - [go-message](https://github.com/emersion/go-message) — MIME parsing
 - [goldmark](https://github.com/yuin/goldmark) — Markdown → HTML for sending
 - [BurntSushi/toml](https://github.com/BurntSushi/toml) — config parsing
+
+## Roadmap
+
+Planned features, roughly in priority order:
+
+- **Forward email** — `f` key, pre-fills "Fwd: " subject with quoted body
+- **Reply-all** — group reply to all original recipients
+- **CC field** in compose
+- **Unread counts in folder tabs** — e.g. `Inbox (3)`
+- **`d` / `u` half-page scroll** in reader (vim-style)
 
 ## Inspirations
 
