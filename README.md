@@ -199,15 +199,6 @@ make help     print this list
 - [goldmark](https://github.com/yuin/goldmark) — Markdown → HTML for sending
 - [BurntSushi/toml](https://github.com/BurntSushi/toml) — config parsing
 
-## Roadmap
-
-Planned features, roughly in priority order:
-
-- **Forward email** — `f` key, pre-fills "Fwd: " subject with quoted body
-- **Reply-all** — group reply to all original recipients
-- **CC field** in compose
-- **Unread counts in folder tabs** — e.g. `Inbox (3)`
-- **`d` / `u` half-page scroll** in reader (vim-style)
 
 ## Inspirations
 
@@ -220,3 +211,9 @@ Planned features, roughly in priority order:
 - [charmbracelet/glamour](https://github.com/charmbracelet/glamour) — Markdown rendering in the terminal
 - [kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim) — the color palette used for the inbox
 - [msgvault](https://github.com/sspaeti/msgvault) — Go IMAP archiver; the IMAP client code in neomd is adapted from it
+
+If you rather see the prompt, check out [initial prompt](_prompts/prompt.md) and its [plan](_prompts/prompt-plan.md).
+
+## Roadmap
+
+See at my second brain at [Roadmap](https://www.ssp.sh/brain/neomd#roadmap).
