@@ -2,9 +2,11 @@
 
 A minimal terminal email client for people who write in Markdown and live in Neovim.
 
+[Neomd](https://www.ssp.sh/brain/neomd/) this is my way of implementing a email TUI based on my experience on [Neomutt](https://www.ssp.sh/brain/neomutt) focus on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing ([Markdown](https://www.ssp.sh/brain/markdown)) and navigating, [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions).
+
 ![neomd](images/neomd.png)
 
-Compose emails in your editor, read them rendered with [glamour](https://github.com/charmbracelet/glamour), and manage your inbox with a [HEY-style screener](https://www.hey.com/features/the-screener/) — all from the terminal. (see also [Neomutt HEY screener implementation](https://www.ssp.sh/brain/hey-screener-in-neomutt))
+Compose emails in your editor, read them rendered with [glamour](https://github.com/charmbracelet/glamour), and manage your inbox with a [HEY-style screener](https://www.hey.com/features/the-screener/) — all from the terminal. 
 
 ## Features
 
