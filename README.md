@@ -4,7 +4,38 @@ A minimal terminal email client for people who write in Markdown and live in Neo
 
 [Neomd](https://www.ssp.sh/brain/neomd/) This is my way of implementing an email TUI based on my experience with Neomutt, focusing on [Neovim](https://www.ssp.sh/brain/neovim) (input) and reading/writing in [Markdown](https://www.ssp.sh/brain/markdown) and navigating with [Vim Motions](https://www.ssp.sh/brain/vim-language-and-motions).
 
-![neomd](images/neomd.png)
+## Screenshots
+### Overview
+Feed view with all Newsletters - also workflow with differnt tabs and unread counter only for certain tabs (not all):
+![neomd](images/overview-email-feed.png)
+
+### Reading Panel
+Reading an email with Markdown 💙:
+
+![neomd](images/reading-email.png)
+
+### Sent emails
+
+![neomd](images/sent-email.png)
+
+This is the markdown sent:
+
+```markdown
+<!-- To: email@domain.com -->
+<!-- Subject: this is an email from neomd! -->
+
+This email is from Neomd. Great I can add links such as [this](https://ssp.sh) with plain Markdown.
+
+E.g. **bold** or *italic*. 
+
+## Does headers work too?
+
+this is a text before a h3.
+### H3 header
+how does that look in an email?
+Best regards
+```
+
 
 Compose emails in your editor, read them rendered with [glamour](https://github.com/charmbracelet/glamour), and manage your inbox with a [HEY-style screener](https://www.hey.com/features/the-screener/) — all from the terminal. 
 
@@ -73,9 +104,25 @@ someday      = "Someday"
 [ui]
 theme       = "dark"   # dark | light | auto
 inbox_count = 50
+signature   = """**Your Name**
+Your Title, Your Company
+
+Connect: [LinkedIn](https://example.com/)"""
 ```
 
 Use an app-specific password (Gmail, Fastmail, Hostpoint, etc.) rather than your main account password.
+
+### Email Sending
+
+#### Sending and Discard email
+To abort a compose without sending, close neovim with `ZQ` or `:q!` (discard). To send, save normally with `ZZ` or `:wq`.
+
+
+#### Signature
+
+The `signature` field in `[ui]` is appended automatically when opening a new compose buffer (`c`). It is **not** added for replies. The separator `--` is inserted for you — just write the signature body in Markdown.
+
+Use TOML triple-quoted strings (`"""`) to preserve line breaks. The signature appears at the end of the buffer — you can edit or delete it before saving.
 
 ## Keybindings
 
