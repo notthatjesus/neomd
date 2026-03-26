@@ -639,8 +639,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.markedUIDs = make(map[uint32]bool) // clear marks on folder reload
 		m.filterActive = false
 		m.filterText = ""
-		cmd := m.sortEmails() // applies sort and sets list items
-		return m, tea.Batch(cmd, m.fetchFolderCountsCmd())
+		sortCmd := m.sortEmails() // applies sort and sets list items
+		// Auto-screen: silently apply screener moves on every inbox load.
+		// In-memory classification is instant; already-screened senders won't
+		// appear in inbox again so this is idempotent.
+		if msg.folder == m.cfg.Folders.Inbox {
+			if moves := m.previewAutoScreen(); len(moves) > 0 {
+				m.loading = true
+				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd(), m.spinner.Tick, m.execAutoScreenCmd(moves))
+			}
+		}
+		return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
 
 	case folderCountsMsg:
 		m.folderCounts = msg.counts
@@ -990,6 +999,11 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "go to:  gi inbox  ga archive  gf feed  gp papertrail  gt trash  gs sent  gk toscreen  go screened-out  gw waiting  gm someday  gg top"
 		return m, nil
 
+	case " ": // leader key — wait for digit or shortcut
+		m.pendingKey = " "
+		m.status = "leader:  1-9 folder tab  (press digit, esc to cancel)"
+		return m, nil
+
 	case "M":
 		m.pendingKey = "M"
 		m.status = "move to:  Mi inbox  Ma archive  Mf feed  Mp papertrail  Mt trash  Mo screened-out  Mw waiting  Mm someday"
@@ -1145,7 +1159,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchBodyCmd(e))
 
-	case " ": // mark/unmark current email for batch, advance cursor
+	case "m": // mark/unmark current email for batch, advance cursor
 		e := selectedEmail(m.inbox)
 		if e == nil {
 			break
@@ -1226,9 +1240,26 @@ func (m *Model) applyFilter() tea.Cmd {
 	return setEmails(&m.inbox, filtered, m.markedUIDs)
 }
 
-// handleChord dispatches two-key sequences (g<x> and M<x>).
+// handleChord dispatches two-key sequences (g<x>, M<x>, space<x>).
 func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 	switch prefix {
+	case " ": // leader key — digit jumps to folder tab (1-based)
+		if len(key) == 1 && key >= "1" && key <= "9" {
+			idx := int(key[0]-'1') // 0-based
+			if idx < len(m.folders) {
+				if idx == m.activeFolderI {
+					return m, nil
+				}
+				m.activeFolderI = idx
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+			}
+		}
+		if key != "esc" {
+			m.status = fmt.Sprintf("leader: unknown key %q", key)
+		}
+		return m, nil
+
 	case "g":
 		if key == "g" { // gg = top of list
 			m.inbox.Select(0)

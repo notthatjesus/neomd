@@ -197,8 +197,15 @@ Press `?` inside neomd to open the interactive help overlay. Start typing to fil
 
 | Key | Action |
 |-----|--------|
-| `space` | mark / unmark email + advance cursor |
+| `m` | mark / unmark email + advance cursor |
 | `U` | clear all marks |
+
+
+### Leader  (space prefix)
+
+| Key | Action |
+|-----|--------|
+| `<space>1 … <space>9` | jump to folder tab by number (Inbox=1, ToScreen=2, …) |
 
 
 ### Sort  (, prefix)

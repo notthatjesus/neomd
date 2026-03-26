@@ -52,8 +52,12 @@ var HelpSections = []HelpSection{
 		{"Mm", "move to Someday"},
 	}},
 	{"Multi-select", [][2]string{
-		{"space", "mark / unmark email + advance cursor"},
+		{"m", "mark / unmark email + advance cursor"},
+		{"n", "mark / unmark email + advance cursor"},
 		{"U", "clear all marks"},
+	}},
+	{"Leader Key Mappings (space prefix)", [][2]string{
+		{"<space>1 … <space>9", "jump to folder tab by number (Inbox=1, ToScreen=2, …)"},
 	}},
 	{"Sort  (, prefix)", [][2]string{
 		{",m", "date newest first (default)"},
