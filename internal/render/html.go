@@ -16,30 +16,22 @@ const htmlTemplate = `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
 <style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-line-height:1.6;color:#333;margin:0;padding:0}
-.w{max-width:650px;margin:0 auto;padding:20px}
-a{color:#ff5d62;text-decoration:none}
-a:hover{text-decoration:underline}
-hr{border:0;border-bottom:1px solid #eaeaea;margin:25px 0}
-h1{font-size:24px;color:#24292e;margin-top:1.5em;margin-bottom:.5em;line-height:1.3}
-h2{font-size:20px;color:#24292e;margin-top:1.5em;margin-bottom:.5em;line-height:1.3}
-h3{font-size:18px;color:#24292e;margin-top:1.5em;margin-bottom:.5em;line-height:1.3}
-p,ul,li{font-size:16px;margin-bottom:1em}
-code{background:#f6f8fa;padding:2px 5px;border-radius:3px;
-font-family:SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;font-size:85%%}
-pre{background:#f6f8fa;padding:16px;border-radius:6px;overflow:auto;
-font-family:SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;font-size:85%%;line-height:1.45}
-blockquote{border-left:3px solid #e1e4e8;color:#6a737d;margin-left:0;padding-left:1em}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:8px 16px;text-align:left}
+a{color:#3150AA;text-decoration:underline}
+h1,h2,h3{color:#24292e;margin:1.2em 0 .4em;line-height:1.3}
+h1{font-size:22px}h2{font-size:18px}h3{font-size:16px}
+p,ul,ol{font-size:15px;margin:0 0 1em}
+code{background:#f6f8fa;padding:2px 4px;border-radius:3px;font-family:monospace;font-size:85%%}
+pre{background:#f6f8fa;padding:12px;border-radius:4px;overflow:auto;font-family:monospace;font-size:85%%;line-height:1.4}
+blockquote{border-left:3px solid #ddd;color:#666;margin:0 0 1em;padding-left:1em}
+hr{border:0;border-bottom:1px solid #eee;margin:20px 0}
 img{max-width:100%%;height:auto}
 </style>
 </head>
 <body>
-<div class="w">
 %s
-</div>
 </body>
 </html>`
 
