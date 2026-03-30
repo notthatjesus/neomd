@@ -4,10 +4,27 @@ INSTALL := $(HOME)/.local/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
-.PHONY: build run install clean test send-test vet fmt tidy release docs help
+.PHONY: build run install clean test send-test vet fmt tidy release docs help check-go
+
+## check-go: verify Go is installed
+check-go:
+	@command -v go >/dev/null 2>&1 || { \
+		echo ""; \
+		echo "  Error: Go is not installed."; \
+		echo ""; \
+		echo "  Install Go 1.22+ from https://go.dev/doc/install"; \
+		echo ""; \
+		echo "  Quick install (Linux):"; \
+		echo "    curl -LO https://go.dev/dl/go1.24.2.linux-amd64.tar.gz"; \
+		echo "    sudo tar -C /usr/local -xzf go1.24.2.linux-amd64.tar.gz"; \
+		echo '    echo "export PATH=$$PATH:/usr/local/go/bin" >> ~/.bashrc'; \
+		echo "    source ~/.bashrc"; \
+		echo ""; \
+		exit 1; \
+	}
 
 ## build: compile ./neomd (version from git tag)
-build: docs
+build: check-go docs
 	go build $(LDFLAGS) -o $(BINARY) $(CMD)
 
 ## run: build and run

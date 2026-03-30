@@ -33,6 +33,7 @@ const (
 	stateCompose           // composing a new email
 	statePresend           // pre-send review: add attachments, then send or edit again
 	stateHelp              // help overlay
+	stateWelcome           // first-run welcome popup
 )
 
 // async message types
@@ -833,6 +834,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.filterActive = false
 		m.filterText = ""
 		sortCmd := m.sortEmails() // applies sort and sets list items
+
+		// First-run welcome: show a brief intro popup.
+		if config.IsFirstRun() {
+			config.MarkWelcomeShown()
+			m.state = stateWelcome
+			return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd())
+		}
+
 		// Auto-screen: silently apply screener moves on every inbox load.
 		// In-memory classification is instant; already-screened senders won't
 		// appear in inbox again so this is idempotent.
@@ -1171,6 +1180,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updatePresend(msg)
 		case stateHelp:
 			return m.updateHelp(msg)
+		case stateWelcome:
+			// Any key dismisses the welcome popup
+			m.state = stateInbox
+			return m, nil
 		}
 	}
 
@@ -2476,6 +2489,8 @@ func (m Model) View() string {
 		return m.viewPresend()
 	case stateHelp:
 		return m.viewHelp()
+	case stateWelcome:
+		return m.viewWelcome()
 	}
 	return ""
 }
@@ -2649,6 +2664,55 @@ func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) viewWelcome() string {
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorPrimary).
+		Padding(1, 3).
+		Width(60)
+
+	title := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
+	key := lipgloss.NewStyle().Foreground(colorAuthorUnread).Bold(true)
+	dim := lipgloss.NewStyle().Foreground(colorDateCol)
+
+	content := title.Render("Welcome to neomd!") + "\n\n" +
+		"Your IMAP folders and screener lists have been\n" +
+		"set up automatically.\n\n" +
+		title.Render("Quick start") + "\n" +
+		key.Render("  j/k") + "  navigate    " + key.Render("enter") + "  open email\n" +
+		key.Render("  c") + "    compose      " + key.Render("r") + "      reply\n" +
+		key.Render("  f") + "    forward      " + key.Render("R") + "      reply-all\n\n" +
+		title.Render("Screener") + " " + dim.Render("(from inbox or reader)") + "\n" +
+		key.Render("  I") + "  approve sender (stays in Inbox)\n" +
+		key.Render("  O") + "  block sender   (moves to ScreenedOut)\n" +
+		key.Render("  F") + "  mark as feed   (moves to Feed)\n" +
+		key.Render("  P") + "  mark as paper  (moves to PaperTrail)\n\n" +
+		dim.Render("Press ? anytime for all keybindings.") + "\n\n" +
+		dim.Render("Press any key to continue.")
+
+	rendered := box.Render(content)
+
+	// Center vertically and horizontally
+	lines := strings.Count(rendered, "\n") + 1
+	padTop := (m.height - lines) / 2
+	if padTop < 0 {
+		padTop = 0
+	}
+	padLeft := (m.width - 60) / 2
+	if padLeft < 0 {
+		padLeft = 0
+	}
+	prefix := strings.Repeat(" ", padLeft)
+	var b strings.Builder
+	for i := 0; i < padTop; i++ {
+		b.WriteByte('\n')
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		b.WriteString(prefix + line + "\n")
+	}
+	return b.String()
 }
 
 func (m Model) viewHelp() string {
