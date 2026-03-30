@@ -2,6 +2,13 @@
 
 Neomd runs on Android via [Termux](https://f-droid.org/en/packages/com.termux/). Build natively on the phone — cross-compiled binaries have DNS issues on Android.
 
+
+Overview email - feed:
+![neomd](../images/android-overview.png)
+
+Reading an email:
+![neomd](../images/android-reading.png)
+
 ## Install
 
 ```sh
