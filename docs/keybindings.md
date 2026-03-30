@@ -114,6 +114,7 @@ Press `?` inside neomd to open the interactive help overlay. Start typing to fil
 | `a  (pre-send)` | attach file via yazi file picker (or $NEOMD_FILE_PICKER) |
 | `D  (pre-send)` | remove last attachment |
 | `d  (pre-send)` | save to Drafts folder (IMAP APPEND with \Draft flag) |
+| `p  (pre-send)` | preview email in $BROWSER (images rendered, same as recipient sees) |
 | `e  (pre-send)` | re-open editor to edit body |
 | `enter  (pre-send)` | confirm and send |
 | `1-9  (reader)` | download attachment N to ~/Downloads and open with xdg-open |

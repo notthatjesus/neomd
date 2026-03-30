@@ -294,12 +294,15 @@ func (m Model) imapCli() *imap.Client {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		m.spinner.Tick,
-		m.ensureFoldersCmd(), // create any missing IMAP folders on first run
 		m.fetchFolderCmd(m.activeFolder()),
 		m.scheduleBgSync(),
-	)
+	}
+	if config.IsFirstRun() {
+		cmds = append(cmds, m.ensureFoldersCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // activeFolder maps the active tab label to an IMAP mailbox name.
@@ -877,9 +880,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isError = true
 			return m, nil
 		}
-		if len(msg.created) == 0 {
-			m.status = "All folders already exist."
-		} else {
+		if len(msg.created) > 0 {
 			m.status = fmt.Sprintf("Created %d folder(s): %s", len(msg.created), strings.Join(msg.created, ", "))
 		}
 		return m, nil
@@ -2169,6 +2170,8 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		// Save to Drafts without sending.
 		return m, m.saveDraftCmd(m.presendFrom(), ps.to, ps.cc, ps.subject, ps.body, m.attachments)
+	case "p":
+		return m.previewInBrowser()
 	case "esc":
 		m.attachments = nil
 		m.pendingSend = nil
@@ -2177,6 +2180,53 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// previewInBrowser renders the composed email as HTML (same pipeline as sending)
+// and opens it in $BROWSER so the user can verify images and formatting.
+func (m Model) previewInBrowser() (tea.Model, tea.Cmd) {
+	ps := m.pendingSend
+	if ps == nil {
+		return m, nil
+	}
+
+	htmlBody, err := render.ToHTML(ps.body)
+	if err != nil {
+		m.status = "preview: " + err.Error()
+		m.isError = true
+		return m, nil
+	}
+
+	// Convert absolute image paths to file:// URLs so the browser can display them.
+	// goldmark renders ![](/abs/path) as <img src="/abs/path"> which browsers
+	// treat as server-relative; file:///abs/path loads from disk.
+	htmlBody = strings.ReplaceAll(htmlBody, `src="/`, `src="file:///`)
+
+	f, err := os.CreateTemp("", "neomd-preview-*.html")
+	if err != nil {
+		m.status = "preview: " + err.Error()
+		m.isError = true
+		return m, nil
+	}
+	tmpPath := f.Name()
+	f.WriteString(htmlBody) //nolint
+	f.Close()
+
+	browser := os.Getenv("BROWSER")
+	if browser == "" {
+		browser = "xdg-open"
+	}
+
+	m.status = "Preview opened in browser."
+	return m, func() tea.Msg {
+		cmd := exec.Command(browser, tmpPath)
+		_ = cmd.Start()
+		go func() {
+			time.Sleep(15 * time.Second)
+			os.Remove(tmpPath)
+		}()
+		return nil
+	}
 }
 
 func (m Model) saveDraftCmd(from, to, cc, subject, body string, attachments []string) tea.Cmd {
@@ -2570,7 +2620,7 @@ func (m Model) viewPresend() string {
 		b.WriteString("\n")
 	}
 
-	b.WriteString(styleHelp.Render("  enter send · ctrl+f from · a attach · D remove last · d draft · e edit · esc cancel"))
+	b.WriteString(styleHelp.Render("  enter send · p preview · ctrl+f from · a attach · D remove last · d draft · e edit · esc cancel"))
 	return b.String()
 }
 

@@ -63,11 +63,14 @@ After saving and closing the editor, neomd shows a review screen before sending 
 | Key | Action |
 |-----|--------|
 | `enter` | send |
+| `p` | preview in `$BROWSER` — renders through the same pipeline as sending, with inline images visible |
 | `a` | attach file via yazi |
 | `D` | remove last attachment |
 | `d` | save to Drafts (IMAP APPEND with `\Draft` flag) |
 | `e` | re-open editor |
 | `esc` | cancel |
+
+Press `p` to see exactly what the recipient will see — the email is rendered through the same goldmark Markdown-to-HTML pipeline used for sending. Local image paths from `[attach]` lines are converted to `file://` URLs so the browser displays them inline.
 
 ## Drafts
 

@@ -2,6 +2,7 @@
 
 ## 2026-03-30
 
+- added  preview email in $BROWSER (images rendered, same as recipient sees)  with `p`
 - **Multiple From addresses / SMTP aliases** — add `[[senders]]` blocks to config to define extra From identities (e.g. `s@ssp.sh` as an alias through an existing account's SMTP); cycle through all accounts + senders with `ctrl+f` in both compose and pre-send screens; the `account =` field matches by account `name =` (not email address)
 - **Sent folder** — after sending, neomd APPENDs a copy to the configured Sent IMAP folder with `\Seen` flag; the same raw MIME bytes used for SMTP delivery are reused for the APPEND (no double-build)
 - **Attachment column in inbox** — `@` appears in a dedicated column next to the date when an email has attachments (detected from IMAP BODYSTRUCTURE including inline images)
@@ -19,7 +20,8 @@
 - **Auto-create screener list directories** — parent directories for screener list paths are created automatically during config load; prevents errors when pressing `I`/`O`/`F`/`P` on a fresh install
 - **Default screener paths** — changed from `~/.config/mutt/` to `~/.config/neomd/lists/` for new installs; existing configs with custom paths are unaffected
 - **Go prerequisite check in Makefile** — `make build`/`make install` now prints clear Go installation instructions instead of a cryptic error when `go` is not found
-- **Docs restructure** — detailed documentation moved from README to `docs/` folder: `docs/keybindings.md` (auto-generated), `docs/screener.md`, `docs/sending.md`, `docs/configuration.md`; README kept concise with links
+- **Pre-send preview (`p`)** — press `p` in the pre-send screen to open a browser preview of the composed email; renders through the same goldmark pipeline as sending, with local image paths converted to `file://` URLs so inline images from `[attach]` lines display correctly
+- **Docs restructure** — detailed documentation moved from README to `docs/` folder: `docs/keybindings.md` (auto-generated), `docs/screener.md`, `docs/sending.md`, `docs/configuration.md`, `docs/android.md`; README kept concise with links
 
 ## 2026-03-29
 
