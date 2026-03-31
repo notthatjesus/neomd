@@ -8,10 +8,15 @@ import (
 	"github.com/sspaeti/neomd/internal/imap"
 )
 
-// replyPrefixRe matches common reply/forward prefixes (Re:, Fwd:, Fw:, AW:, SV:, VS:).
-var replyPrefixRe = regexp.MustCompile(`(?i)^(re|fwd?|aw|sv|vs)\s*(\[\d+\])?\s*:\s*`)
+// replyPrefixRe matches common reply/forward prefixes.
+var replyPrefixRe = regexp.MustCompile(`(?i)^(re|fwd?|fw|aw|sv|vs|ref|rif)\s*(\[\d+\])?\s*:\s*`)
 
-// normalizeSubject strips reply/forward prefixes and lowercases for thread grouping.
+// hasReplyPrefix returns true if the subject starts with a reply/forward prefix.
+func hasReplyPrefix(subject string) bool {
+	return replyPrefixRe.MatchString(strings.TrimSpace(subject))
+}
+
+// normalizeSubject strips all reply/forward prefixes and lowercases.
 func normalizeSubject(subject string) string {
 	s := strings.TrimSpace(subject)
 	for {
@@ -28,20 +33,26 @@ func normalizeSubject(subject string) string {
 // threadedEmail pairs an email with its tree-drawing prefix for the inbox list.
 type threadedEmail struct {
 	email        imap.Email
-	threadPrefix string // e.g. "┌─>" or "  " or ""
+	threadPrefix string // "│" = continuation, "╰" = root, "" = not threaded
 }
 
 // threadEmails groups and reorders emails into threaded display order.
+//
+// Threading uses two strategies:
+//  1. InReplyTo/MessageID chain — direct header links (most reliable)
+//  2. Subject fallback — ONLY for emails whose subject has a reply prefix
+//     (Re:, AW:, Fwd:, etc.). Emails without a prefix are never grouped by
+//     subject, so recurring notifications/invoices with identical subjects
+//     stay separate.
+//
 // Each thread is sorted internally by date ascending (oldest = root at bottom,
-// newest replies on top), matching neomutt's reverse-thread style.
-// Threads are sorted relative to each other by the most recent email in each thread.
-// Returns the reordered emails with tree prefixes for rendering.
+// newest replies on top). Threads are sorted by most recent email.
 func threadEmails(emails []imap.Email) []threadedEmail {
 	if len(emails) == 0 {
 		return nil
 	}
 
-	// Phase 1: Build groups using InReplyTo/MessageID + subject+participant fallback.
+	// Union-find for grouping connected emails.
 	parent := make([]int, len(emails))
 	for i := range parent {
 		parent[i] = i
@@ -60,7 +71,7 @@ func threadEmails(emails []imap.Email) []threadedEmail {
 		}
 	}
 
-	// Connect by InReplyTo -> MessageID.
+	// Phase 1: Connect by InReplyTo -> MessageID chain.
 	byMsgID := make(map[string]int, len(emails))
 	for i := range emails {
 		if id := emails[i].MessageID; id != "" {
@@ -75,44 +86,51 @@ func threadEmails(emails []imap.Email) []threadedEmail {
 		}
 	}
 
-	// Subject+participant fallback: group emails with same normalized subject
-	// where participants overlap (From of one appears in From/To of another).
-	type subjGroup struct {
-		indices []int
-		from    string // extractAddrFromField of first email
-		to      string
-	}
-	bySubject := make(map[string]*subjGroup)
+	// Phase 2: Subject fallback — only for emails with a reply/forward prefix.
+	// This catches threads where the InReplyTo points to an email in another
+	// folder (e.g. your reply in Sent). We group by normalized subject, but
+	// ONLY if at least one email in the pair has a reply prefix.
+	byNormSubj := make(map[string][]int) // normalized subject -> indices
 	for i := range emails {
 		subj := normalizeSubject(emails[i].Subject)
 		if subj == "" {
 			continue
 		}
-		from := extractAddrFromField(emails[i].From)
-		to := extractAddrFromField(emails[i].To)
-
-		if g, ok := bySubject[subj]; ok {
-			// Check participant overlap with existing group members.
-			if from == g.from || from == g.to || to == g.from || to == g.to {
-				union(i, g.indices[0])
-				g.indices = append(g.indices, i)
+		byNormSubj[subj] = append(byNormSubj[subj], i)
+	}
+	for _, indices := range byNormSubj {
+		if len(indices) < 2 {
+			continue
+		}
+		// Only group if at least one email has a reply prefix.
+		hasReply := false
+		for _, idx := range indices {
+			if hasReplyPrefix(emails[idx].Subject) {
+				hasReply = true
+				break
 			}
-		} else {
-			bySubject[subj] = &subjGroup{indices: []int{i}, from: from, to: to}
+		}
+		if !hasReply {
+			continue
+		}
+		// Connect all emails with this normalized subject.
+		first := indices[0]
+		for _, idx := range indices[1:] {
+			union(first, idx)
 		}
 	}
 
-	// Phase 2: Collect threads.
+	// Collect threads.
 	threadMap := make(map[int][]int) // root -> indices
 	for i := range emails {
 		root := find(i)
 		threadMap[root] = append(threadMap[root], i)
 	}
 
-	// Phase 3: Sort each thread internally by date ascending (oldest first = root).
+	// Sort each thread internally by date ascending (oldest first = root).
 	type thread struct {
 		indices   []int
-		newestIdx int // index of most recent email (for inter-thread sorting)
+		newestIdx int
 	}
 	var threads []thread
 	for _, indices := range threadMap {
@@ -123,13 +141,12 @@ func threadEmails(emails []imap.Email) []threadedEmail {
 		threads = append(threads, thread{indices: indices, newestIdx: newest})
 	}
 
-	// Phase 4: Sort threads by most recent email (matching the overall sort: newest first).
+	// Sort threads by most recent email (newest first).
 	sort.Slice(threads, func(i, j int) bool {
 		return emails[threads[i].newestIdx].Date.After(emails[threads[j].newestIdx].Date)
 	})
 
-	// Phase 5: Build output with thread connector lines (Twitter-style).
-	// Newest reply on top, root (oldest) at bottom.
+	// Build output with thread connector lines.
 	// │ = continuation (more thread below), ╰ = root/last in thread.
 	result := make([]threadedEmail, 0, len(emails))
 	for _, t := range threads {
@@ -152,14 +169,4 @@ func threadEmails(emails []imap.Email) []threadedEmail {
 	}
 
 	return result
-}
-
-// extractAddrFromField returns the bare email address from a "Name <addr>" or "addr" string.
-func extractAddrFromField(s string) string {
-	if i := strings.LastIndex(s, "<"); i >= 0 {
-		if j := strings.Index(s[i:], ">"); j >= 0 {
-			return strings.ToLower(s[i+1 : i+j])
-		}
-	}
-	return strings.ToLower(strings.TrimSpace(s))
 }
