@@ -100,6 +100,11 @@ make build
 ./neomd
 ```
 
+Or if on Arch Linux (AUR), you can use my [neomd-bin](https://aur.archlinux.org/packages/neomd-bin) via:
+```sh
+yay -S neomd-bin
+```
+
 On first run, neomd:
 1. Creates `~/.config/neomd/config.toml` with placeholders — fill in your IMAP/SMTP credentials
 2. Creates `~/.config/neomd/lists/` for screener allowlists (or uses your custom paths from config)
