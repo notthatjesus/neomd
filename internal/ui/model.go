@@ -183,6 +183,11 @@ type Model struct {
 	cmdHistory []string // up to 5 most-recent distinct commands (newest first)
 	cmdHistI   int      // -1 = not browsing history; 0..n = history index
 
+	// IMAP server-side search (ctrl+/)
+	imapSearchActive  bool   // true while typing in the IMAP search prompt
+	imapSearchText    string // current IMAP search query
+	imapSearchResults bool   // true when displaying IMAP search results (esc to clear)
+
 	// filterActive / filterText implement our own inbox search.
 	// We bypass bubbles/list's built-in filter because SetShowTitle(false)
 	// hides the filter input. filterActive is true while the user is typing.
@@ -212,6 +217,9 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener) Mode
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
+	compose := newComposeModel()
+	compose.knownAddrs = sc.AllAddresses()
+
 	return Model{
 		cfg:         cfg,
 		accounts:    cfg.ActiveAccounts(),
@@ -223,7 +231,7 @@ func New(cfg *config.Config, clients []*imap.Client, sc *screener.Screener) Mode
 		cmdHistory:  loadCmdHistory(config.HistoryPath()),
 		cmdHistI:    -1,
 		// Note: Spam is intentionally excluded from tabs — use :go-spam to visit.
-		compose:     newComposeModel(),
+		compose:     compose,
 		spinner:     sp,
 		markedUIDs:  make(map[uint32]bool),
 		sortField:   "date",
@@ -976,7 +984,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		return m, setEmails(&m.inbox, m.emails, m.markedUIDs)
+		return m, m.applyFilter()
+
+	case imapSearchResultMsg:
+		return m.handleIMAPSearchResult(msg)
+
+	case everythingResultMsg:
+		return m.handleEverythingResult(msg)
 
 	case batchDoneMsg:
 		m.loading = false
@@ -1283,6 +1297,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// ── IMAP server-side search mode ────────────────────────────────
+	if m.imapSearchActive {
+		mm, cmd, consumed := m.updateIMAPSearch(key)
+		if consumed {
+			return mm, cmd
+		}
+	}
+
 	// ── Our own filter mode ─────────────────────────────────────────
 	// When active, consume all keys for text input; no inbox commands fire.
 	if m.filterActive {
@@ -1331,15 +1353,24 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 
+	case "esc":
+		if m.imapSearchResults {
+			m.imapSearchResults = false
+			m.imapSearchText = ""
+			m.offTabFolder = ""
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
+		}
+
 	// ── Chord prefixes ──────────────────────────────────────────────
 	case "g":
 		m.pendingKey = "g"
-		m.status = "go to:  gi inbox  ga archive  gf feed  gp papertrail  gt trash  gs sent  gk toscreen  go screened-out  gw waiting  gm someday  gd drafts  gS spam  gg top"
+		m.status = "go to:  gi inbox  ga archive  gf feed  gp papertrail  gt trash  gs sent  gk toscreen  go screened-out  gw waiting  gm someday  gd drafts  gS spam  ge everything  gg top"
 		return m, nil
 
 	case " ": // leader key — wait for digit or shortcut
 		m.pendingKey = " "
-		m.status = "leader:  1-9 folder tab  (press digit, esc to cancel)"
+		m.status = "leader:  1-9 folder tab  / IMAP search  (esc to cancel)"
 		return m, nil
 
 	case "M":
@@ -1380,7 +1411,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "U": // clear all marks
 		m.markedUIDs = make(map[uint32]bool)
-		return m, setEmails(&m.inbox, m.emails, m.markedUIDs)
+		return m, m.applyFilter()
 
 	case "u": // undo last move/delete
 		if len(m.undoStack) == 0 {
@@ -1489,12 +1520,14 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "L":
 		m.activeFolderI = (m.activeFolderI + 1) % len(m.folders)
 		m.offTabFolder = ""
+		m.imapSearchResults = false
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 
 	case "shift+tab", "H":
 		m.activeFolderI = (m.activeFolderI - 1 + len(m.folders)) % len(m.folders)
 		m.offTabFolder = ""
+		m.imapSearchResults = false
 		m.loading = true
 		return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.activeFolder()))
 
@@ -1565,7 +1598,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if next < len(m.inbox.Items()) {
 			m.inbox.Select(next)
 		}
-		return m, setEmails(&m.inbox, m.emails, m.markedUIDs)
+		return m, m.applyFilter()
 
 	}
 
@@ -1597,7 +1630,7 @@ func (m *Model) sortEmails() tea.Cmd {
 		}
 		return less
 	})
-	return setEmails(&m.inbox, m.emails, m.markedUIDs)
+	return m.applyFilter()
 }
 
 // loadCmdHistory reads persisted command history from path (newest first).
@@ -1664,6 +1697,12 @@ func (m *Model) applyFilter() tea.Cmd {
 func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 	switch prefix {
 	case " ": // leader key — digit jumps to folder tab (1-based)
+		if key == "/" {
+			m.imapSearchActive = true
+			m.imapSearchText = ""
+			m.imapSearchResults = false
+			return m, nil
+		}
 		if len(key) == 1 && key >= "1" && key <= "9" {
 			idx := int(key[0]-'1') // 0-based
 			if idx < len(m.folders) {
@@ -1697,6 +1736,10 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 			m.offTabFolder = "Drafts"
 			m.status = "Drafts folder — press R to reload, tab to leave"
 			return m, tea.Batch(m.spinner.Tick, m.fetchFolderCmd(m.cfg.Folders.Drafts))
+		}
+		if key == "e" { // ge — Everything: latest emails across all folders
+			m.loading = true
+			return m, tea.Batch(m.spinner.Tick, m.fetchEverythingCmd())
 		}
 		folderMap := map[string]string{
 			"i": "Inbox",
@@ -2658,6 +2701,8 @@ func (m Model) viewInbox() string {
 	b.WriteString("\n")
 	if m.cmdMode {
 		b.WriteString(viewCmdLine(m.cmdText, m.width))
+	} else if m.imapSearchActive || m.imapSearchResults {
+		b.WriteString(m.viewIMAPSearchBar())
 	} else if m.filterActive || m.filterText != "" {
 		cursor := ""
 		if m.filterActive {

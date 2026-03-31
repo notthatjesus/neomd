@@ -104,6 +104,13 @@ var (
 			Foreground(colorMuted).
 			Italic(true).
 			Padding(0, 1)
+
+	styleSuggestion = lipgloss.NewStyle().
+				Foreground(colorMuted)
+
+	styleSuggestionSelected = lipgloss.NewStyle().
+				Foreground(colorPrimary).
+				Bold(true)
 )
 
 // folderTabs renders the folder switcher bar.

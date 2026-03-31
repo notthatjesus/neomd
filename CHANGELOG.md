@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-31
+- **IMAP search across all folders (`space /` or `:search`)** — server-side IMAP SEARCH across all configured folders (Inbox, Sent, Archive, Feed, etc.); results displayed in a temporary "Search" tab with `[Folder]` prefix on each subject; supports query prefixes: `from:simon`, `subject:invoice`, `to:team@`, or plain text to search all three fields; press `esc` to close results
+- **Filter preserves across actions** — the local `/` filter no longer clears when pressing `n` (toggle read), `m` (mark), `U` (clear marks), or sorting; filter stays active until `esc`
+- **Address autocomplete in compose** — To, Cc, and Bcc fields show autocomplete suggestions from screener lists (`screened_in.txt`, `feed.txt`, `papertrail.txt`); navigate with `ctrl+n`/`ctrl+p`/arrows, accept with `tab`; supports multi-address fields (autocomplete applies after the last comma)
+- **Everything view (`ge` or `:everything`)** — shows the 50 most recent emails across all folders in a temporary "Everything" tab, sorted by date descending; each subject prefixed with `[Folder]`; useful for finding emails that were screened out or moved to spam
+- **Draft signature fix** — re-opening a draft (`E`) no longer appends a duplicate signature; the draft body already contains it from the first compose
+- **Draft reader footer** — `E draft` now appears in the reader footer when viewing an email from the Drafts folder
+- **Android support (`make android`)** — cross-compile for Android ARM64; runs in Termux; documented in `docs/android.md` with install instructions and useful shortcuts
+- **Docs restructure** — detailed documentation moved from README to `docs/` folder: `docs/keybindings.md` (auto-generated), `docs/screener.md`, `docs/sending.md`, `docs/configuration.md`, `docs/android.md`; README kept concise with links
+
 ## 2026-03-30
 
 - added  preview email in $BROWSER (images rendered, same as recipient sees)  with `p`
@@ -21,7 +31,6 @@
 - **Default screener paths** — changed from `~/.config/mutt/` to `~/.config/neomd/lists/` for new installs; existing configs with custom paths are unaffected
 - **Go prerequisite check in Makefile** — `make build`/`make install` now prints clear Go installation instructions instead of a cryptic error when `go` is not found
 - **Pre-send preview (`p`)** — press `p` in the pre-send screen to open a browser preview of the composed email; renders through the same goldmark pipeline as sending, with local image paths converted to `file://` URLs so inline images from `[attach]` lines display correctly
-- **Docs restructure** — detailed documentation moved from README to `docs/` folder: `docs/keybindings.md` (auto-generated), `docs/screener.md`, `docs/sending.md`, `docs/configuration.md`, `docs/android.md`; README kept concise with links
 
 ## 2026-03-29
 

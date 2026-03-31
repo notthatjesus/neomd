@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"sort"
+	"strings"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -23,6 +26,11 @@ type composeModel struct {
 	subject      textinput.Model
 	step         composeStep
 	extraVisible bool // ctrl+b toggles Cc+Bcc together; off by default
+
+	// Address autocomplete
+	knownAddrs  []string // all addresses from screener lists (set once)
+	suggestions []string // current matching suggestions
+	suggestI    int      // selected suggestion index (-1 = none)
 }
 
 func newComposeModel() composeModel {
@@ -51,10 +59,10 @@ func newComposeModel() composeModel {
 	sub.Width = 60
 	sub.Prompt = ""
 
-	return composeModel{to: to, cc: cc, bcc: bcc, subject: sub, step: stepTo}
+	return composeModel{to: to, cc: cc, bcc: bcc, subject: sub, step: stepTo, suggestI: -1}
 }
 
-// reset clears all fields and refocuses on To.
+// reset clears all fields and refocuses on To. Preserves knownAddrs.
 func (c *composeModel) reset() {
 	c.to.Reset()
 	c.cc.Reset()
@@ -66,6 +74,85 @@ func (c *composeModel) reset() {
 	c.cc.Blur()
 	c.bcc.Blur()
 	c.subject.Blur()
+	c.suggestions = nil
+	c.suggestI = -1
+	// knownAddrs is intentionally preserved
+}
+
+// activeField returns the textinput currently being edited.
+func (c *composeModel) activeField() *textinput.Model {
+	switch c.step {
+	case stepTo:
+		return &c.to
+	case stepCC:
+		return &c.cc
+	case stepBCC:
+		return &c.bcc
+	default:
+		return &c.subject
+	}
+}
+
+// isAddrField returns true if the current step is an address field (To/Cc/Bcc).
+func (c *composeModel) isAddrField() bool {
+	return c.step == stepTo || c.step == stepCC || c.step == stepBCC
+}
+
+// updateSuggestions refreshes the suggestion list based on the current input.
+func (c *composeModel) updateSuggestions() {
+	c.suggestI = -1
+	c.suggestions = nil
+	if !c.isAddrField() || len(c.knownAddrs) == 0 {
+		return
+	}
+	// Get the last address being typed (after the last comma)
+	input := c.activeField().Value()
+	lastPart := input
+	if i := strings.LastIndex(input, ","); i >= 0 {
+		lastPart = strings.TrimSpace(input[i+1:])
+	}
+	if lastPart == "" {
+		return
+	}
+	query := strings.ToLower(lastPart)
+	for _, addr := range c.knownAddrs {
+		if strings.Contains(strings.ToLower(addr), query) {
+			c.suggestions = append(c.suggestions, addr)
+		}
+	}
+	// Sort: prefix matches first, then alphabetical
+	sort.Slice(c.suggestions, func(i, j int) bool {
+		ip := strings.HasPrefix(strings.ToLower(c.suggestions[i]), query)
+		jp := strings.HasPrefix(strings.ToLower(c.suggestions[j]), query)
+		if ip != jp {
+			return ip
+		}
+		return c.suggestions[i] < c.suggestions[j]
+	})
+	if len(c.suggestions) > 8 {
+		c.suggestions = c.suggestions[:8]
+	}
+}
+
+// applySuggestion inserts the selected suggestion into the active field.
+func (c *composeModel) applySuggestion() {
+	if c.suggestI < 0 || c.suggestI >= len(c.suggestions) {
+		return
+	}
+	field := c.activeField()
+	input := field.Value()
+	selected := c.suggestions[c.suggestI]
+
+	// Replace the last partial address with the full one
+	if i := strings.LastIndex(input, ","); i >= 0 {
+		prefix := input[:i+1] + " "
+		field.SetValue(prefix + selected)
+	} else {
+		field.SetValue(selected)
+	}
+	field.SetCursor(len(field.Value()))
+	c.suggestions = nil
+	c.suggestI = -1
 }
 
 // update handles key input for the compose form.
@@ -89,31 +176,39 @@ func (c composeModel) update(msg tea.Msg) (composeModel, tea.Cmd, bool) {
 			}
 			return c, nil, false
 
-		case "tab", "enter":
-			switch c.step {
-			case stepTo:
-				if c.extraVisible {
-					c.step = stepCC
-					c.to.Blur()
-					c.cc.Focus()
+		case "tab":
+			// Tab with suggestions → accept suggestion
+			if len(c.suggestions) > 0 && c.isAddrField() {
+				if c.suggestI < 0 {
+					c.suggestI = 0
+				}
+				c.applySuggestion()
+				return c, nil, false
+			}
+			// Tab without suggestions → next field (same as enter)
+			return c.advanceField()
+
+		case "enter":
+			// Enter always advances to next field
+			if len(c.suggestions) > 0 && c.suggestI >= 0 {
+				c.applySuggestion()
+			}
+			return c.advanceField()
+
+		case "down", "ctrl+n":
+			if len(c.suggestions) > 0 {
+				c.suggestI = (c.suggestI + 1) % len(c.suggestions)
+				return c, nil, false
+			}
+
+		case "up", "ctrl+p":
+			if len(c.suggestions) > 0 {
+				if c.suggestI <= 0 {
+					c.suggestI = len(c.suggestions) - 1
 				} else {
-					c.step = stepSubject
-					c.to.Blur()
-					c.subject.Focus()
+					c.suggestI--
 				}
 				return c, nil, false
-			case stepCC:
-				c.step = stepBCC
-				c.cc.Blur()
-				c.bcc.Focus()
-				return c, nil, false
-			case stepBCC:
-				c.step = stepSubject
-				c.bcc.Blur()
-				c.subject.Focus()
-				return c, nil, false
-			case stepSubject:
-				return c, nil, true
 			}
 		}
 	}
@@ -129,7 +224,40 @@ func (c composeModel) update(msg tea.Msg) (composeModel, tea.Cmd, bool) {
 	default:
 		c.subject, cmd = c.subject.Update(msg)
 	}
+	c.updateSuggestions()
 	return c, cmd, false
+}
+
+// advanceField moves to the next compose field. Returns (model, cmd, launchEditor).
+func (c composeModel) advanceField() (composeModel, tea.Cmd, bool) {
+	c.suggestions = nil
+	c.suggestI = -1
+	switch c.step {
+	case stepTo:
+		if c.extraVisible {
+			c.step = stepCC
+			c.to.Blur()
+			c.cc.Focus()
+		} else {
+			c.step = stepSubject
+			c.to.Blur()
+			c.subject.Focus()
+		}
+		return c, nil, false
+	case stepCC:
+		c.step = stepBCC
+		c.cc.Blur()
+		c.bcc.Focus()
+		return c, nil, false
+	case stepBCC:
+		c.step = stepSubject
+		c.bcc.Blur()
+		c.subject.Focus()
+		return c, nil, false
+	case stepSubject:
+		return c, nil, true
+	}
+	return c, nil, false
 }
 
 // view renders the compose header form.
@@ -169,5 +297,19 @@ func (c composeModel) view() string {
 	}
 
 	out += subLabel + subField
+
+	// Show autocomplete suggestions
+	if len(c.suggestions) > 0 && c.isAddrField() {
+		out += "\n"
+		for i, s := range c.suggestions {
+			if i == c.suggestI {
+				out += styleSuggestionSelected.Render("  > "+s) + "\n"
+			} else {
+				out += styleSuggestion.Render("    "+s) + "\n"
+			}
+		}
+		out += styleHelp.Render("  tab accept · ↑↓ select")
+	}
+
 	return out
 }

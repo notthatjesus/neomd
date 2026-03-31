@@ -84,6 +84,23 @@ func New(cfg Config) (*Screener, error) {
 	return s, nil
 }
 
+// AllAddresses returns a deduplicated slice of all known email addresses
+// from screened_in, feed, and papertrail lists. Useful for autocomplete.
+// Excludes screened_out and spam since you wouldn't want to email those.
+func (s *Screener) AllAddresses() []string {
+	seen := make(map[string]bool)
+	var addrs []string
+	for _, m := range []map[string]bool{s.screenedIn, s.feed, s.paperTrail} {
+		for addr := range m {
+			if !seen[addr] {
+				seen[addr] = true
+				addrs = append(addrs, addr)
+			}
+		}
+	}
+	return addrs
+}
+
 // Classify returns the category for a given "from" email address.
 // The address is normalised to lowercase before matching.
 func (s *Screener) Classify(from string) Category {

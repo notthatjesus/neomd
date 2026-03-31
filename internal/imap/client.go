@@ -331,6 +331,156 @@ func hasAttachment(bs imap.BodyStructure) bool {
 	return false
 }
 
+// SearchMessages searches a folder using IMAP SEARCH and returns matching emails
+// with headers fetched. The query is matched against From, Subject, and To headers.
+// Supports prefixes: "from:x", "subject:x", "to:x". Plain text searches all three.
+// Searches ALL messages on the server, not just loaded ones.
+func (c *Client) SearchMessages(ctx context.Context, folder, query string) ([]Email, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if query == "" {
+		return nil, nil
+	}
+
+	criteria := buildSearchCriteria(query)
+
+	var uids []uint32
+	err := c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+
+		searchData, err := conn.UIDSearch(criteria, nil).Wait()
+		if err != nil {
+			return fmt.Errorf("UID SEARCH: %w", err)
+		}
+		uidSet, ok := searchData.All.(imap.UIDSet)
+		if !ok {
+			return nil
+		}
+		nums, _ := uidSet.Nums()
+		for _, u := range nums {
+			uids = append(uids, uint32(u))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(uids) == 0 {
+		return nil, nil
+	}
+
+	// Cap results per folder to avoid huge fetches
+	if len(uids) > 100 {
+		uids = uids[len(uids)-100:] // keep newest (highest UIDs)
+	}
+
+	return c.FetchHeadersByUID(ctx, folder, uids)
+}
+
+// SearchAllFolders searches across multiple folders and returns combined results.
+// Each folder is SELECTed and searched individually (IMAP limitation).
+func (c *Client) SearchAllFolders(ctx context.Context, folders []string, query string) ([]Email, error) {
+	if query == "" {
+		return nil, nil
+	}
+	var all []Email
+	for _, folder := range folders {
+		emails, err := c.SearchMessages(ctx, folder, query)
+		if err != nil {
+			// Skip folders that fail (e.g. don't exist on this server)
+			continue
+		}
+		all = append(all, emails...)
+	}
+	return all, nil
+}
+
+// buildSearchCriteria parses a query string into IMAP SearchCriteria.
+// Supports prefixes: "from:value", "subject:value", "to:value".
+// Plain text without a prefix searches OR(FROM, SUBJECT, TO).
+func buildSearchCriteria(query string) *imap.SearchCriteria {
+	q := strings.TrimSpace(query)
+	lower := strings.ToLower(q)
+
+	switch {
+	case strings.HasPrefix(lower, "from:"):
+		val := strings.TrimSpace(q[5:])
+		return &imap.SearchCriteria{
+			Header: []imap.SearchCriteriaHeaderField{{Key: "From", Value: val}},
+		}
+	case strings.HasPrefix(lower, "subject:"):
+		val := strings.TrimSpace(q[8:])
+		return &imap.SearchCriteria{
+			Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: val}},
+		}
+	case strings.HasPrefix(lower, "to:"):
+		val := strings.TrimSpace(q[3:])
+		return &imap.SearchCriteria{
+			Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: val}},
+		}
+	default:
+		// Plain text: OR(FROM q, OR(SUBJECT q, TO q))
+		return &imap.SearchCriteria{
+			Or: [][2]imap.SearchCriteria{
+				{
+					{Header: []imap.SearchCriteriaHeaderField{{Key: "From", Value: q}}},
+					{Or: [][2]imap.SearchCriteria{
+						{
+							{Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: q}}},
+							{Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: q}}},
+						},
+					}},
+				},
+			},
+		}
+	}
+}
+
+// FetchLatest fetches the N most recent emails (by UID, descending) from a folder.
+// Uses UID SEARCH ALL to get all UIDs, takes the last N, and fetches headers.
+func (c *Client) FetchLatest(ctx context.Context, folder string, n int) ([]Email, error) {
+	uids, err := c.SearchUIDs(ctx, folder)
+	if err != nil {
+		return nil, err
+	}
+	if len(uids) == 0 {
+		return nil, nil
+	}
+	// UIDs are ascending; take the last N (newest)
+	if len(uids) > n {
+		uids = uids[len(uids)-n:]
+	}
+	return c.FetchHeadersByUID(ctx, folder, uids)
+}
+
+// FetchLatestAllFolders fetches the N most recent emails across all given folders,
+// sorted by date descending. Takes a few per folder proportionally.
+func (c *Client) FetchLatestAllFolders(ctx context.Context, folders []string, total int) ([]Email, error) {
+	perFolder := total / len(folders)
+	if perFolder < 5 {
+		perFolder = 5
+	}
+	var all []Email
+	for _, folder := range folders {
+		emails, err := c.FetchLatest(ctx, folder, perFolder)
+		if err != nil {
+			continue // skip folders that fail
+		}
+		all = append(all, emails...)
+	}
+	// Sort by date descending and cap
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Date.After(all[j].Date)
+	})
+	if len(all) > total {
+		all = all[:total]
+	}
+	return all, nil
+}
+
 // FetchHeadersByUID fetches envelope headers for a specific slice of UIDs.
 // Callers should pass small batches (≤200) to avoid oversized IMAP requests.
 func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []uint32) ([]Email, error) {

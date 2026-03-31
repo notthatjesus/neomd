@@ -32,6 +32,7 @@ var HelpSections = []HelpSection{
 		{"gw", "go to Waiting"},
 		{"gm", "go to Someday"},
 		{"gd", "go to Drafts"},
+		{"ge", "go to Everything — latest 50 emails across all folders"},
 		{"gS", "go to Spam (not in tab rotation)"},
 	}},
 	{"Screener  (marked or cursor, any folder)", [][2]string{
@@ -62,6 +63,7 @@ var HelpSections = []HelpSection{
 	}},
 	{"Leader Key Mappings (space prefix)", [][2]string{
 		{"<space>1 … <space>9", "jump to folder tab by number (Inbox=1, ToScreen=2, …)"},
+		{"<space>/", "IMAP search ALL emails on server (From + Subject)"},
 	}},
 	{"Sort  (, prefix)", [][2]string{
 		{",m", "date newest first (default)"},
@@ -104,6 +106,8 @@ var HelpSections = []HelpSection{
 		{":mark-read  / :mr", "mark all emails in current folder as read"},
 		{":reload  / :r", "reload current folder"},
 		{":check  / :ch", "show screener classification for selected email"},
+		{":everything  / :ev", "show latest 50 emails across all folders"},
+		{":search  / :se", "IMAP search all emails on server (From + Subject + To)"},
 		{":delete-all  / :da", "permanently delete ALL emails in current folder (y/n)"},
 		{":empty-trash  / :et", "permanently delete ALL emails in Trash (y/n)"},
 		{":create-folders  / :cf", "create missing IMAP folders from config (safe, idempotent)"},
@@ -111,12 +115,14 @@ var HelpSections = []HelpSection{
 		{":quit  / :q", "quit neomd"},
 	}},
 	{"Composing", [][2]string{
-		{"tab / enter", "move to next field"},
+		{"tab  (To/Cc/Bcc)", "accept autocomplete suggestion or next field"},
+		{"ctrl+n / ctrl+p / arrows  (To/Cc/Bcc)", "cycle through address suggestions"},
 		{"enter  (on Subject)", "open $EDITOR with a .md temp file"},
 		{"esc", "cancel"},
 	}},
 	{"General", [][2]string{
-		{"/", "filter emails in current folder"},
+		{"/", "filter loaded emails (From + Subject, in-memory)"},
+		{"<space>/  or  :search", "IMAP search ALL emails on server (From + Subject)"},
 		{"?", "toggle this help"},
 		{"q", "quit  (from inbox)"},
 	}},

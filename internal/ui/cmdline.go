@@ -123,6 +123,26 @@ func init() {
 			},
 		},
 		{
+			name:    "everything",
+			aliases: []string{"ev"},
+			desc:    "show latest 50 emails across all folders (newest first)",
+			run: func(m *Model) (tea.Model, tea.Cmd) {
+				m.loading = true
+				return m, tea.Batch(m.spinner.Tick, m.fetchEverythingCmd())
+			},
+		},
+		{
+			name:    "search",
+			aliases: []string{"se"},
+			desc:    "IMAP search all emails in current folder (From + Subject)",
+			run: func(m *Model) (tea.Model, tea.Cmd) {
+				m.imapSearchActive = true
+				m.imapSearchText = ""
+				m.imapSearchResults = false
+				return m, nil
+			},
+		},
+		{
 			name:    "go-spam",
 			aliases: []string{"spam"},
 			desc:    "open Spam folder (not in tab rotation — use :go-spam to visit)",
