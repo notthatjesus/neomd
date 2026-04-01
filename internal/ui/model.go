@@ -104,6 +104,155 @@ func neomdTempDir() string {
 	return dir
 }
 
+// maskEmail masks the local part of an email address: "user@example.com" → "u***@example.com".
+// For "Name <email>" format, masks the email part only.
+func maskEmail(s string) string {
+	// Extract email from "Name <email>" format
+	email := s
+	prefix := ""
+	if i := strings.LastIndex(s, "<"); i >= 0 {
+		if j := strings.Index(s[i:], ">"); j >= 0 {
+			prefix = s[:i]
+			email = s[i+1 : i+j]
+		}
+	}
+	// Mask local part
+	at := strings.Index(email, "@")
+	if at <= 0 {
+		return s // not an email, return as-is
+	}
+	local := email[:at]
+	domain := email[at:]
+	masked := string(local[0]) + "***" + domain
+	if prefix != "" {
+		return prefix + "<" + masked + ">"
+	}
+	return masked
+}
+
+// writeDebugReport generates a diagnostic report and opens it in the reader.
+func (m Model) writeDebugReport() tea.Cmd {
+	return func() tea.Msg {
+		var b strings.Builder
+		b.WriteString("# neomd debug report\n\n")
+		b.WriteString(fmt.Sprintf("Time: %s\n", time.Now().Format(time.RFC3339)))
+		b.WriteString(fmt.Sprintf("Config: %s\n\n", config.DefaultPath()))
+
+		// Accounts
+		b.WriteString("## Accounts\n\n")
+		for i, a := range m.accounts {
+			active := ""
+			if i == m.accountI {
+				active = " (active)"
+			}
+			b.WriteString(fmt.Sprintf("- **%s**%s\n", a.Name, active))
+			b.WriteString(fmt.Sprintf("  - IMAP: `%s`\n", a.IMAP))
+			b.WriteString(fmt.Sprintf("  - SMTP: `%s`\n", a.SMTP))
+			b.WriteString(fmt.Sprintf("  - User: `%s`\n", maskEmail(a.User)))
+			b.WriteString(fmt.Sprintf("  - From: `%s`\n", maskEmail(a.From)))
+			hasPass := "set"
+			if a.Password == "" {
+				hasPass = "EMPTY"
+			}
+			b.WriteString(fmt.Sprintf("  - Password: %s\n", hasPass))
+		}
+
+		// Connection test
+		b.WriteString("\n## IMAP Connection\n\n")
+		for i, cli := range m.clients {
+			name := "unknown"
+			if i < len(m.accounts) {
+				name = m.accounts[i].Name
+			}
+			b.WriteString(fmt.Sprintf("- **%s** → `%s`\n", name, cli.Addr()))
+			if err := cli.Ping(nil); err != nil {
+				b.WriteString(fmt.Sprintf("  - PING: FAILED — `%s`\n", err))
+			} else {
+				b.WriteString("  - PING: OK\n")
+			}
+		}
+
+		// Folders
+		b.WriteString("\n## Folder Mapping\n\n")
+		f := m.cfg.Folders
+		folders := [][2]string{
+			{"Inbox", f.Inbox}, {"Sent", f.Sent}, {"Trash", f.Trash},
+			{"Drafts", f.Drafts}, {"ToScreen", f.ToScreen}, {"Feed", f.Feed},
+			{"PaperTrail", f.PaperTrail}, {"ScreenedOut", f.ScreenedOut},
+			{"Archive", f.Archive}, {"Waiting", f.Waiting},
+			{"Scheduled", f.Scheduled}, {"Someday", f.Someday}, {"Spam", f.Spam},
+		}
+		for _, kv := range folders {
+			val := kv[1]
+			if val == "" {
+				val = "(not set)"
+			}
+			b.WriteString(fmt.Sprintf("- %s → `%s`\n", kv[0], val))
+		}
+
+		// Tab order
+		b.WriteString(fmt.Sprintf("\nTab order: %s\n", strings.Join(m.folders, " → ")))
+		b.WriteString(fmt.Sprintf("Active tab: %s (index %d)\n", m.folders[m.activeFolderI], m.activeFolderI))
+
+		// Screener lists
+		b.WriteString("\n## Screener Lists\n\n")
+		sc := m.cfg.Screener
+		lists := [][2]string{
+			{"screened_in", sc.ScreenedIn}, {"screened_out", sc.ScreenedOut},
+			{"feed", sc.Feed}, {"papertrail", sc.PaperTrail}, {"spam", sc.Spam},
+		}
+		for _, kv := range lists {
+			path := kv[1]
+			if path == "" {
+				b.WriteString(fmt.Sprintf("- %s: (not set)\n", kv[0]))
+				continue
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				b.WriteString(fmt.Sprintf("- %s: `%s` — MISSING (%s)\n", kv[0], path, err))
+			} else {
+				b.WriteString(fmt.Sprintf("- %s: `%s` (%d bytes)\n", kv[0], path, info.Size()))
+			}
+		}
+
+		// UI config
+		b.WriteString("\n## UI Config\n\n")
+		b.WriteString(fmt.Sprintf("- inbox_count: %d\n", m.cfg.UI.InboxCount))
+		b.WriteString(fmt.Sprintf("- theme: %s\n", m.cfg.UI.Theme))
+		b.WriteString(fmt.Sprintf("- auto_screen_on_load: %v\n", m.cfg.UI.AutoScreen()))
+		b.WriteString(fmt.Sprintf("- bg_sync_interval: %d min\n", m.cfg.UI.BgSyncInterval))
+
+		// Current state
+		b.WriteString("\n## Current State\n\n")
+		b.WriteString(fmt.Sprintf("- Loaded emails: %d\n", len(m.emails)))
+		b.WriteString(fmt.Sprintf("- Loading: %v\n", m.loading))
+		b.WriteString(fmt.Sprintf("- View state: %d\n", m.state))
+		b.WriteString(fmt.Sprintf("- Last status: %s\n", m.status))
+		b.WriteString(fmt.Sprintf("- Is error: %v\n", m.isError))
+
+		// Folder unseen counts
+		b.WriteString("\n## Unseen Counts\n\n")
+		if len(m.folderCounts) == 0 {
+			b.WriteString("(none loaded yet)\n")
+		}
+		for folder, n := range m.folderCounts {
+			b.WriteString(fmt.Sprintf("- %s: %d\n", folder, n))
+		}
+
+		// Write to file
+		path := filepath.Join(neomdTempDir(), "debug.log")
+		if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
+			return errMsg{fmt.Errorf("write debug report: %w", err)}
+		}
+
+		// Return as body to display in reader
+		return bodyLoadedMsg{
+			email: &imap.Email{Subject: "neomd debug report", From: "neomd", Folder: "debug"},
+			body:  b.String(),
+		}
+	}
+}
+
 // pendingSendData holds a composed message waiting in the pre-send review screen.
 type pendingSendData struct {
 	to, cc, bcc, subject, body string

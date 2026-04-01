@@ -153,6 +153,14 @@ func init() {
 			},
 		},
 		{
+			name:    "debug",
+			aliases: []string{"dbg"},
+			desc:    "write diagnostic report to /tmp/neomd/debug.log and open it",
+			run: func(m *Model) (tea.Model, tea.Cmd) {
+				return m, m.writeDebugReport()
+			},
+		},
+		{
 			name:    "quit",
 			aliases: []string{"q"},
 			desc:    "quit neomd",

@@ -154,6 +154,22 @@ func (c *Client) Close() {
 	}
 }
 
+// Addr returns the IMAP server address (host:port).
+func (c *Client) Addr() string { return c.addr() }
+
+// User returns the IMAP username.
+func (c *Client) User() string { return c.cfg.User }
+
+// Ping tests the IMAP connection by issuing a NOOP command.
+func (c *Client) Ping(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		return conn.Noop().Wait()
+	})
+}
+
 // FetchHeaders fetches the latest n message summaries from folder.
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
 	if ctx == nil {
