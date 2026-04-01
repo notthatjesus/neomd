@@ -146,7 +146,7 @@ On first launch, **auto-screening is paused** because your screener lists are em
 
 1. From your Inbox, pick an email and press `I` (screen **in**) to approve the sender, or `O` (screen **out**) to block them. This creates your first screener list entry.
 2. Once you've classified at least one sender, auto-screening activates on every Inbox load — new emails from known senders are sorted automatically.
-3. Unknown senders land in the `ToScreen` tab. Jump there with `gk` (or `Tab`, or click the tab) and classify them:
+3. Unknown senders land in the `ToScreen` tab. Jump there with `gk` (or `Tab`, use `L` or click the tab) and classify them:
    - `I` screen **in** — sender stays in Inbox forever
    - `O` screen **out** — sender never reaches Inbox again
    - `F` **feed** — newsletters go to the Feed tab
@@ -158,26 +158,23 @@ On first launch, **auto-screening is paused** because your screener lists are em
 You choose who can land in your Inbox. Bye-bye spam. This is the beauty of [HEY-Screener](https://www.hey.com/features/the-screener/), and neomd implements the same concept.
 
 > **Tip:** To disable auto-screening entirely, set `auto_screen_on_load = false` in `[ui]` config. Run `:debug` inside neomd if something isn't working.
-## Keybindings
+### Screener Workflow
+
+Find full Screener Workflow at [docs/screener.md](docs/screener.md), classification tables, and bulk re-classification instructions.
+### Keybindings
 
 Press `?` inside neomd to open the interactive help overlay. Start typing to filter shortcuts.
 
 See the [full keybindings reference](docs/keybindings.md) (auto-generated from [`internal/ui/keys.go`](internal/ui/keys.go) via `make docs`).
 
-## Screener Workflow
-
-Unknown senders land in `ToScreen`; press `I/O/F/P` to approve, block, or classify them. Auto-screening keeps your inbox clean without manual intervention.
-
-See [docs/screener.md](docs/screener.md) for the full workflow, classification tables, and bulk re-classification instructions.
-
-## How Sending Works
+### How Sending Works
 
 Compose in Markdown, send as `multipart/alternative` (plain text + HTML). Attachments, CC/BCC, multiple From addresses, drafts, and pre-send review are all supported.
 
 - See [docs/sending.md](docs/sending.md) for details on MIME structure, attachments, pre-send review, and drafts. 
 - See [docs/reading.md](docs/reading.md) for the reader: images, inline links, attachments, and navigation.
 
-## Make Targets
+### Dev: Makefile Commands
 
 ```
 make build    compile ./neomd
