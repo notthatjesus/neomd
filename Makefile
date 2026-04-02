@@ -45,6 +45,14 @@ demo: build
 demo-reset:
 	./scripts/reset-demo.sh $(HOME)/.config/neomd-demo
 
+## benchmark: benchmark IMAP latency for Hostpoint and Gmail
+benchmark:
+	@echo "=== Hostpoint ==="
+	@IMAP_HOST=imap.mail.hostpoint.ch IMAP_USER=simu@sspaeti.com IMAP_PASS=$$IMAP_PASS_SIMU ./scripts/imap-benchmark.sh
+	@echo ""
+	@echo "=== Gmail ==="
+	@IMAP_HOST=imap.gmail.com IMAP_USER=neomd.demo@gmail.com IMAP_PASS=$$IMAP_APPPASS_GMAIL_NEOMD ./scripts/imap-benchmark.sh
+
 ## test: run all tests
 test:
 	go test ./...
