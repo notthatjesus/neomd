@@ -108,11 +108,8 @@ type bulkOp struct {
 
 const maxUndoStack = 20
 
-// bulkProgressThreshold: only show progress for batches larger than this.
-const bulkProgressThreshold = 10
-
-func newBulkOp(label string, total int) *bulkOp {
-	if total <= bulkProgressThreshold {
+func (m Model) newBulkOp(label string, total int) *bulkOp {
+	if total <= m.cfg.UI.BulkThreshold() {
 		return nil // small batches don't need progress tracking
 	}
 	return &bulkOp{label: label, total: int64(total)}
@@ -127,7 +124,7 @@ func (b *bulkOp) String() string {
 
 // startBulk initializes a bulk progress tracker. Call before launching batch commands.
 func (m *Model) startBulk(label string, total int) {
-	m.bulkProgress = newBulkOp(label, total)
+	m.bulkProgress = m.newBulkOp(label, total)
 }
 
 // Version is set by main.go at startup (from build-time ldflags).
@@ -1114,7 +1111,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.folder == m.cfg.Folders.Inbox && m.cfg.UI.AutoScreen() && !m.screener.IsEmpty() {
 			if moves := m.previewAutoScreen(); len(moves) > 0 {
 				m.loading = true
-				m.bulkProgress = newBulkOp("Screening", len(moves))
+				m.bulkProgress = m.newBulkOp("Screening", len(moves))
 				return m, tea.Batch(sortCmd, m.fetchFolderCountsCmd(), m.spinner.Tick, m.execAutoScreenCmd(moves))
 			}
 		}
@@ -1665,7 +1662,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loading = true
-		m.bulkProgress = newBulkOp("Deleting", len(targets))
+		m.bulkProgress = m.newBulkOp("Deleting", len(targets))
 		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Trash))
 
 	case "X": // permanent delete (marked or cursor) — only in Trash
@@ -1706,7 +1703,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loading = true
-		m.bulkProgress = newBulkOp("Screening", len(targets))
+		m.bulkProgress = m.newBulkOp("Screening", len(targets))
 		return m, tea.Batch(m.spinner.Tick, m.batchScreenerCmd(targets, key))
 
 	// A = archive (pure move, no screener update)
@@ -1716,7 +1713,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.loading = true
-		m.bulkProgress = newBulkOp("Archiving", len(targets))
+		m.bulkProgress = m.newBulkOp("Archiving", len(targets))
 		return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, m.cfg.Folders.Archive))
 
 	// ── Auto-screen dry-run (Inbox only) ────────────────────────────
@@ -1768,7 +1765,7 @@ func (m Model) updateInbox(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		moves := m.pendingMoves
 		m.pendingMoves = nil
 		m.loading = true
-		m.bulkProgress = newBulkOp("Screening", len(moves))
+		m.bulkProgress = m.newBulkOp("Screening", len(moves))
 		return m, tea.Batch(m.spinner.Tick, m.execAutoScreenCmd(moves))
 
 	case "n":
@@ -2077,7 +2074,7 @@ func (m Model) handleChord(prefix, key string) (tea.Model, tea.Cmd) {
 		}
 		if dst, ok := dstMap[key]; ok {
 			m.loading = true
-			m.bulkProgress = newBulkOp("Moving", len(targets))
+			m.bulkProgress = m.newBulkOp("Moving", len(targets))
 			return m, tea.Batch(m.spinner.Tick, m.batchMoveCmd(targets, dst))
 		}
 		m.status = fmt.Sprintf("unknown: M%s", key)

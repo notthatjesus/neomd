@@ -101,11 +101,20 @@ func (f FoldersConfig) TabLabels() []string {
 
 // UIConfig holds display preferences.
 type UIConfig struct {
-	Theme             string `toml:"theme"`               // dark | light | auto
-	InboxCount        int    `toml:"inbox_count"`         // number of messages to fetch
-	Signature         string `toml:"signature"`           // appended to new compose buffers (markdown)
-	AutoScreenOnLoad  *bool  `toml:"auto_screen_on_load"` // screen inbox on every load (default true)
-	BgSyncInterval    int    `toml:"bg_sync_interval"`    // background sync interval in minutes (0 = disabled, default 5)
+	Theme                  string `toml:"theme"`                    // dark | light | auto
+	InboxCount             int    `toml:"inbox_count"`              // number of messages to fetch
+	Signature              string `toml:"signature"`                // appended to new compose buffers (markdown)
+	AutoScreenOnLoad       *bool  `toml:"auto_screen_on_load"`      // screen inbox on every load (default true)
+	BgSyncInterval         int    `toml:"bg_sync_interval"`         // background sync interval in minutes (0 = disabled, default 5)
+	BulkProgressThreshold  int    `toml:"bulk_progress_threshold"`  // show progress counter for batches larger than this (default 10)
+}
+
+// BulkThreshold returns the configured bulk progress threshold (default 10).
+func (u UIConfig) BulkThreshold() int {
+	if u.BulkProgressThreshold <= 0 {
+		return 10
+	}
+	return u.BulkProgressThreshold
 }
 
 // AutoScreen returns true if auto-screen-on-inbox-load is enabled (default: true).
