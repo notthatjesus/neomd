@@ -6,7 +6,9 @@
 set -e
 
 CONFIG_DIR="${1:-$HOME/.config/neomd-demo}"
-DEMO_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/neomd-demo"
+# Derive cache dir name from config dir name (matches Go's cacheDirName logic)
+CONFIG_NAME="$(basename "$CONFIG_DIR")"
+DEMO_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/$CONFIG_NAME"
 
 echo "Resetting neomd demo state..."
 echo "  Config dir: $CONFIG_DIR"
