@@ -1,5 +1,10 @@
 # Changelog
 
+# 2026-04-05
+- **`auto_bcc` config** — root-level `auto_bcc = "addr@example.com"` appends an address to every outgoing email's Bcc so you keep a copy in an external mailbox (e.g. a hey.com archive); visible in the composer and pre-send review (no silent BCC), deduped against any manual Bcc entry
+- **`shift+tab` in compose** — navigate back through To/Cc/Bcc/Subject fields (previously could only move forward with tab/enter)
+- **Reader shows local time** — email dates in the reader header now convert to your system's local timezone and include the clock time (e.g. `Apr 05, 00:51`); previously showed the sender's timezone date without time
+
 # 2026-04-02
 - **Auto From on reply** — replying auto-selects the From address that matches the email's To/CC field (e.g. email sent to `simon@domain.com` replies from `simon@domain.com`); `r` now works from inbox list view; `# [neomd: from: ...]` shown in editor; `x` in pre-send discards the email
 - **Email safety hardening** — bulk operations show live progress counter ("Screening: 42/1000…") for batches >10; screener now moves emails before updating list files (no inconsistent state on failure); SaveSent failure shown as warning instead of silently swallowed; batch failures report exact moved/total counts; partial batch undo info preserved on error; undo stack capped at 20

@@ -139,6 +139,12 @@ type Config struct {
 	Screener ScreenerConfig `toml:"screener"`
 	Folders  FoldersConfig  `toml:"folders"`
 	UI       UIConfig       `toml:"ui"`
+
+	// AutoBCC, if set, is added to every outgoing email's Bcc field so the
+	// user keeps a copy in an external mailbox (e.g. their hey.com archive).
+	// Format: "addr@example.com" or "Name <addr@example.com>". Shown in the
+	// composer and pre-send review so it's never a silent BCC.
+	AutoBCC string `toml:"auto_bcc"`
 }
 
 // ActiveAccounts returns the list of configured accounts.

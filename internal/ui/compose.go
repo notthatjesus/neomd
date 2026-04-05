@@ -188,6 +188,10 @@ func (c composeModel) update(msg tea.Msg) (composeModel, tea.Cmd, bool) {
 			// Tab without suggestions → next field (same as enter)
 			return c.advanceField()
 
+		case "shift+tab":
+			// Move to the previous field (To ← Cc ← Bcc ← Subject).
+			return c.retreatField()
+
 		case "enter":
 			// Enter always advances to next field
 			if len(c.suggestions) > 0 && c.suggestI >= 0 {
@@ -256,6 +260,35 @@ func (c composeModel) advanceField() (composeModel, tea.Cmd, bool) {
 		return c, nil, false
 	case stepSubject:
 		return c, nil, true
+	}
+	return c, nil, false
+}
+
+// retreatField moves to the previous compose field. Skips Cc/Bcc when hidden.
+func (c composeModel) retreatField() (composeModel, tea.Cmd, bool) {
+	c.suggestions = nil
+	c.suggestI = -1
+	switch c.step {
+	case stepSubject:
+		if c.extraVisible {
+			c.step = stepBCC
+			c.subject.Blur()
+			c.bcc.Focus()
+		} else {
+			c.step = stepTo
+			c.subject.Blur()
+			c.to.Focus()
+		}
+	case stepBCC:
+		c.step = stepCC
+		c.bcc.Blur()
+		c.cc.Focus()
+	case stepCC:
+		c.step = stepTo
+		c.cc.Blur()
+		c.to.Focus()
+	case stepTo:
+		// already at the first field — no-op
 	}
 	return c, nil, false
 }

@@ -1444,7 +1444,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Go to pre-send review instead of sending immediately.
 		m.pendingSend = &pendingSendData{
-			to: msg.to, cc: msg.cc, bcc: msg.bcc,
+			to: msg.to, cc: msg.cc, bcc: mergeAutoBCC(msg.bcc, m.cfg.AutoBCC),
 			subject: msg.subject, body: cleanBody,
 		}
 		m.state = statePresend
@@ -2966,6 +2966,25 @@ func (m Model) matchFromIndex(toField, ccField string) int {
 }
 
 // extractEmailAddr returns the bare email address from "Name <addr>" or "addr".
+// mergeAutoBCC appends autoBCC to the existing bcc field, deduped by email
+// address. Returns bcc unchanged when autoBCC is empty or already present.
+func mergeAutoBCC(bcc, autoBCC string) string {
+	autoBCC = strings.TrimSpace(autoBCC)
+	if autoBCC == "" {
+		return bcc
+	}
+	autoAddr := strings.ToLower(extractEmailAddr(autoBCC))
+	for _, p := range strings.Split(bcc, ",") {
+		if strings.ToLower(extractEmailAddr(strings.TrimSpace(p))) == autoAddr {
+			return bcc
+		}
+	}
+	if strings.TrimSpace(bcc) == "" {
+		return autoBCC
+	}
+	return bcc + ", " + autoBCC
+}
+
 func extractEmailAddr(s string) string {
 	if i := strings.IndexByte(s, '<'); i >= 0 {
 		if j := strings.IndexByte(s, '>'); j > i {

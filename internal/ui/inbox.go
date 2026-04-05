@@ -162,10 +162,24 @@ func fmtSize(b uint32) string {
 	}
 }
 
+// fmtDateFull returns a date+time string for the reader header (always
+// includes the clock time, unlike fmtDate which is compact for list rows).
+func fmtDateFull(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	t = t.Local()
+	if t.Year() == time.Now().Year() {
+		return t.Format("Jan 02, 15:04")
+	}
+	return t.Format("Jan 02 2006, 15:04")
+}
+
 func fmtDate(t time.Time) string {
 	if t.IsZero() {
 		return "      "
 	}
+	t = t.Local()
 	now := time.Now()
 	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
 		return t.Format("15:04 ")

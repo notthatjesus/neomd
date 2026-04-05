@@ -106,7 +106,7 @@ func renderEmailHeader(e *imap.Email, attachments []imap.Attachment, width int) 
 		styleFrom.Render("From:    ") + e.From,
 		styleDate.Render("To:      ") + e.To,
 		styleSubject.Render("Subject: ") + e.Subject,
-		styleDate.Render("Date:    ") + fmtDate(e.Date),
+		styleDate.Render("Date:    ") + fmtDateFull(e.Date),
 	}
 
 	if len(attachments) > 0 {
@@ -158,9 +158,9 @@ func composeHelp(step int, hasSenders bool) string {
 	case 0: // stepTo
 		return styleHelp.Render("  tab/enter next · ctrl+b toggle Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
 	case 1, 2: // stepCC, stepBCC
-		return styleHelp.Render("  tab/enter next (optional) · ctrl+b hide Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
+		return styleHelp.Render("  tab next · shift+tab prev · ctrl+b hide Cc/Bcc · ctrl+t attach" + fromHint + " · esc cancel")
 	default: // stepSubject
-		return styleHelp.Render("  enter open editor · ctrl+t attach · D remove last" + fromHint + " · esc cancel")
+		return styleHelp.Render("  enter open editor · shift+tab prev · ctrl+t attach · D remove last" + fromHint + " · esc cancel")
 	}
 }
 
