@@ -1,6 +1,7 @@
 # Changelog
 
 # 2026-04-05
+- **OAuth2 authentication** ([#3](https://github.com/sspaeti/neomd/pull/3), thanks @notthatjesus) — accounts can set `auth_type = "oauth2"` with `oauth2_client_id`, `oauth2_client_secret`, `oauth2_issuer_url`, and `oauth2_scopes` instead of a password; on first launch neomd opens the browser for the authorization code flow, persists the token to `~/.config/neomd/tokens/<account>.json`, and refreshes it automatically; works with Gmail, Office365, and any OIDC-discoverable provider via XOAUTH2 over IMAP and SMTP; password auth paths unchanged for existing accounts
 - **`auto_bcc` config** — root-level `auto_bcc = "addr@example.com"` appends an address to every outgoing email's Bcc so you keep a copy in an external mailbox (e.g. a hey.com archive); visible in the composer and pre-send review (no silent BCC), deduped against any manual Bcc entry
 - **`shift+tab` in compose** — navigate back through To/Cc/Bcc/Subject fields (previously could only move forward with tab/enter)
 - **Reader shows local time** — email dates in the reader header now convert to your system's local timezone and include the clock time (e.g. `Apr 05, 00:51`); previously showed the sender's timezone date without time
