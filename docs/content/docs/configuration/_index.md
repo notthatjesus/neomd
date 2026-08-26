@@ -318,7 +318,6 @@ BR Simon
 **Notes:**
 
 - Use inline styles only (no `<style>` blocks or external CSS) for maximum email client compatibility
-- Host logo images externally (e.g., `https://example.com/logo.png`) so they display for recipients
 - The `text` field is backward compatible: if empty, neomd falls back to the legacy `signature` field
 - The `--` separator is added automatically before the text signature
 

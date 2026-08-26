@@ -4,7 +4,7 @@ INSTALL := $(HOME)/.local/bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
 
-.PHONY: build run install daemon clean test test-integration send-test vet fmt tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark
+.PHONY: build run install daemon clean test test-integration send-test vet fmt fmt-check tidy release docs help check-go demo demo-reset demo-hp demo-hp-reset benchmark
 
 
 .DEFAULT_GOAL := install
@@ -92,6 +92,13 @@ vet:
 fmt:
 	gofmt -w .
 
+## fmt-check: report unformatted files (nonzero exit if any) — for CI / pre-commit
+fmt-check:
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "Unformatted files (run 'make fmt'):"; echo "$$unformatted"; exit 1; \
+	fi
+
 ## tidy: tidy go.mod and go.sum
 tidy:
 	go mod tidy
@@ -157,6 +164,13 @@ sync-headless: build
 	@echo ""
 	@echo "Checking logs for errors..."
 	@ssh ti "tail -20 ~/.local/share/neomd/daemon.log"
+
+## syncthing-tunnel: start syncthing on ti (if not running) and open SSH tunnel → http://localhost:8385
+syncthing-tunnel:
+	@echo "Starting syncthing on ti..."
+	ssh ti "pgrep syncthing || nohup syncthing >> ~/syncthing.log 2>&1 &"
+	@echo "Opening SSH tunnel — access Syncthing UI at http://localhost:8385"
+	ssh -L 8385:localhost:8384 ti
 
 ## help: print this list
 help:
