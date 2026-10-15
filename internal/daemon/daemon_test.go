@@ -194,3 +194,63 @@ func TestReloadScreener(t *testing.T) {
 		t.Error("reloaded screener should classify new@example.com as Inbox")
 	}
 }
+
+// smtpConfigFor must resolve accounts by From address and [[senders]] aliases
+// via their account reference — the queued message's From header is the only
+// identity information the daemon has.
+func TestSMTPConfigFor(t *testing.T) {
+	cfg := config.Config{
+		Accounts: []config.AccountConfig{
+			{Name: "main", SMTP: "smtp.main.io:465", User: "simu@sspaeti.com", From: "Simon <simu@sspaeti.com>"},
+			{Name: "biz", SMTP: "smtp.biz.io:587", User: "simon@ssp.sh", From: "simon@ssp.sh", STARTTLS: true},
+		},
+		Senders: []config.SenderConfig{
+			{Name: "alias", From: "Newsletter <news@ssp.sh>", Account: "biz"},
+		},
+	}
+	d := New(cfg, &imap.Client{}, &screener.Screener{})
+
+	got, err := d.smtpConfigFor("Simon <simu@sspaeti.com>")
+	if err != nil || got.Host != "smtp.main.io" || got.Port != "465" {
+		t.Errorf("account match: %+v err=%v", got, err)
+	}
+	// Alias resolves to its referenced account's SMTP but keeps the alias From.
+	got, err = d.smtpConfigFor("news@ssp.sh")
+	if err != nil || got.Host != "smtp.biz.io" || got.User != "simon@ssp.sh" || got.From != "news@ssp.sh" {
+		t.Errorf("sender alias match: %+v err=%v", got, err)
+	}
+	if _, err := d.smtpConfigFor("stranger@nowhere.io"); err == nil {
+		t.Error("unknown From must error")
+	}
+}
+
+// --- OOO target account resolution ([ooo].accounts) ---
+
+func TestResolveOOOAccounts(t *testing.T) {
+	cfg := config.Config{Accounts: []config.AccountConfig{
+		{Name: "Personal", User: "simu@sspaeti.com"},
+		{Name: "Work", User: "simon@sspaeti.com"},
+		{Name: "WorkInfo", User: "info@ssp.sh"},
+		{Name: "Gmail", User: "x@gmail.com", IMAPDisabled: true},
+	}}
+
+	got, err := resolveOOOAccounts(cfg, []string{"Work", "workinfo"}) // case-insensitive
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Name != "Work" || got[1].Name != "WorkInfo" {
+		t.Fatalf("got %+v", got)
+	}
+
+	if _, err := resolveOOOAccounts(cfg, []string{"Nope"}); err == nil {
+		t.Fatal("unknown account name must error")
+	}
+	if _, err := resolveOOOAccounts(cfg, []string{"Gmail"}); err == nil {
+		t.Fatal("imap_disabled account must error (cannot watch its inbox)")
+	}
+
+	got, err = resolveOOOAccounts(cfg, nil)
+	if err != nil || got != nil {
+		t.Fatalf("empty list must resolve to nil (daemon account default), got %+v, %v", got, err)
+	}
+}

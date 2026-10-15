@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sspaeti/neomd/internal/contacts"
 	"github.com/sspaeti/neomd/internal/imap"
 )
 
@@ -30,6 +31,9 @@ type imapSearchResultMsg struct {
 }
 
 // imapSearchAllCmd runs IMAP SEARCH across all configured folders.
+// The query is expanded with addresses of known contacts whose display name
+// matches (see expandSearchQueries) so searching "louise" also finds messages
+// that only carry her bare address in the headers.
 func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 	cli := m.imapCli()
 	f := m.cfg.Folders
@@ -41,10 +45,48 @@ func (m Model) imapSearchAllCmd(query string) tea.Cmd {
 	if f.Work != "" {
 		folders = append(folders, f.Work)
 	}
+	queries := expandSearchQueries(query, m.contacts)
 	return func() tea.Msg {
-		emails, err := cli.SearchAllFolders(nil, folders, query)
-		return imapSearchResultMsg{emails: emails, query: query, err: err}
+		var all []imap.Email
+		seen := make(map[string]bool)
+		var firstErr error
+		for i, q := range queries {
+			emails, err := cli.SearchAllFolders(nil, folders, q)
+			if err != nil && i == 0 {
+				firstErr = err // only the user's literal query reports errors
+			}
+			for _, e := range emails {
+				key := fmt.Sprintf("%s\x00%d", e.Folder, e.UID)
+				if !seen[key] {
+					seen[key] = true
+					all = append(all, e)
+				}
+			}
+		}
+		return imapSearchResultMsg{emails: all, query: query, err: firstErr}
 	}
+}
+
+// expandSearchQueries returns the original query plus per-address queries for
+// known contacts whose display name matches it. IMAP SEARCH can only match
+// header text, and messages neomd sent carry bare addresses — without this a
+// name search finds nothing in Sent. subject: queries are never expanded.
+func expandSearchQueries(query string, cs *contacts.Store) []string {
+	queries := []string{query}
+	q := strings.TrimSpace(query)
+	prefix := ""
+	switch lower := strings.ToLower(q); {
+	case strings.HasPrefix(lower, "subject:"):
+		return queries
+	case strings.HasPrefix(lower, "from:"):
+		prefix, q = "from:", strings.TrimSpace(q[5:])
+	case strings.HasPrefix(lower, "to:"):
+		prefix, q = "to:", strings.TrimSpace(q[3:])
+	}
+	for _, addr := range cs.AddrsMatchingName(q, 3) {
+		queries = append(queries, prefix+addr)
+	}
+	return queries
 }
 
 // updateIMAPSearch handles key input while the IMAP search prompt is active.
@@ -225,6 +267,67 @@ func (m *Model) handleConversationResult(msg conversationResultMsg) (tea.Model, 
 	return m, m.sortEmails()
 }
 
+// senderAddr returns the first bare address from an email's From header,
+// or "" if the header is empty or unparseable.
+func senderAddr(e *imap.Email) string {
+	addrs := imap.SplitAddrs(e.From)
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[0]
+}
+
+// senderResultMsg carries results from a per-sender search across folders.
+type senderResultMsg struct {
+	addr   string
+	emails []imap.Email
+	err    error
+}
+
+// fetchSenderCmd searches all folders for every email from the given
+// email's sender address.
+func (m Model) fetchSenderCmd(e *imap.Email) tea.Cmd {
+	addr := senderAddr(e)
+	cli := m.imapCli()
+	f := m.cfg.Folders
+	folders := []string{
+		f.Inbox, f.Sent, f.Trash, f.Drafts,
+		f.ToScreen, f.Feed, f.PaperTrail, f.ScreenedOut,
+		f.Archive, f.Waiting, f.Scheduled, f.Someday, f.Spam,
+	}
+	if f.Work != "" {
+		folders = append(folders, f.Work)
+	}
+	return func() tea.Msg {
+		if addr == "" {
+			return senderResultMsg{addr: addr}
+		}
+		emails, err := cli.SearchAllFolders(nil, folders, "from:"+addr)
+		return senderResultMsg{addr: addr, emails: emails, err: err}
+	}
+}
+
+// handleSenderResult displays the "Sender" view — every email from one address.
+func (m *Model) handleSenderResult(msg senderResultMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	if msg.err != nil {
+		m.status = "Sender: " + msg.err.Error()
+		m.isError = true
+		return m, nil
+	}
+	if len(msg.emails) == 0 {
+		m.status = fmt.Sprintf("No emails found from %q.", msg.addr)
+		return m, nil
+	}
+	m.offTabFolder = "Sender"
+	m.emails = msg.emails
+	m.markedUIDs = make(map[uint32]bool)
+	m.filterActive = false
+	m.filterText = ""
+	m.status = fmt.Sprintf("Sender — %d email(s) from %s across all folders. esc to close.", len(msg.emails), msg.addr)
+	return m, m.sortEmails()
+}
+
 // viewIMAPSearchBar renders the search prompt at the bottom of the inbox.
 func (m Model) viewIMAPSearchBar() string {
 	cursor := ""
@@ -235,4 +338,70 @@ func (m Model) viewIMAPSearchBar() string {
 		return styleHelp.Render(fmt.Sprintf("  search: %q — esc to close · from: subject: to: prefixes supported", m.imapSearchText))
 	}
 	return styleHelp.Render(fmt.Sprintf("  search (all folders): %s%s  · enter search · esc cancel · e.g. newsletter  from:simon  subject:invoice  to:team@", m.imapSearchText, cursor))
+}
+
+// mergeResultMsg carries the members of an opened user-merged thread.
+type mergeResultMsg struct {
+	title  string
+	emails []imap.Email
+	err    error
+}
+
+// mergeSearchMaxIDs caps how many Message-IDs one merge lookup sends. Each id
+// becomes two HEADER terms in a right-nested OR tree, so an unbounded group
+// would build an IMAP command long enough for servers to reject — and
+// searchFolder only returns the newest 100 hits per folder anyway, so the
+// extra terms could not widen the result. The newest members are kept.
+const mergeSearchMaxIDs = 100
+
+// fetchMergeCmd fetches every stored member of the merge (plus direct
+// replies) across the same folders the T conversation view searches.
+// fallback (the members visible in the current list) is shown when the
+// server returns nothing, so the view never opens empty.
+func (m Model) fetchMergeCmd(title string, ids []string, fallback []imap.Email) tea.Cmd {
+	if len(ids) > mergeSearchMaxIDs {
+		ids = ids[len(ids)-mergeSearchMaxIDs:] // most recently stored members
+	}
+	cli := m.imapCli()
+	f := m.cfg.Folders
+	folders := []string{f.Inbox, f.Sent, f.Archive, f.Waiting, f.Someday, f.Scheduled}
+	if f.Work != "" {
+		folders = append(folders, f.Work)
+	}
+	cur := m.activeFolder()
+	found := false
+	for _, fo := range folders {
+		if fo == cur {
+			found = true
+			break
+		}
+	}
+	if !found && cur != "" {
+		folders = append(folders, cur)
+	}
+	return func() tea.Msg {
+		emails, err := cli.SearchByMessageIDs(nil, folders, ids)
+		if err == nil && len(emails) == 0 {
+			emails = fallback
+		}
+		return mergeResultMsg{title: title, emails: emails, err: err}
+	}
+}
+
+// handleMergeResult displays the opened merge as an off-tab view.
+func (m *Model) handleMergeResult(msg mergeResultMsg) (tea.Model, tea.Cmd) {
+	m.loading = false
+	m.imapSearchResults = false
+	if msg.err != nil {
+		m.status = "Merge: " + msg.err.Error()
+		m.isError = true
+		return m, nil
+	}
+	m.offTabFolder = "Merged: " + msg.title
+	m.emails = msg.emails
+	m.markedUIDs = make(map[uint32]bool)
+	m.filterActive = false
+	m.filterText = ""
+	m.status = fmt.Sprintf("Merged %q — %d email(s). esc to close · :unmerge removes the cursor email.", msg.title, len(msg.emails))
+	return m, m.sortEmails()
 }

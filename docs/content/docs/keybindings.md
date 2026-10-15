@@ -17,11 +17,13 @@ To update both the help overlay and this document at once, edit that file and ru
 | Key | Action |
 |-----|--------|
 | `j / k` | move down / up |
-| `d / u` | page down / up in inbox/help |
+| `d / u` | page down / up in inbox/help (ctrl+d / ctrl+u also page, vim-style) |
+| `j / d  (last row)` | load the next inbox_count older emails of the folder (status: Loading more…) |
 | `gg` | jump to top |
 | `G` | jump to bottom |
 | `enter / l` | open email |
 | `h / q / esc` | back to inbox (from reader) |
+| `h / esc  (inbox)` | back one level — clear marks, close a temporary view (Search / Thread / Sender / Merged) or clear the / filter and z unread-only |
 | `?` | toggle help overlay (type to filter) |
 
 
@@ -87,8 +89,8 @@ To update both the help overlay and this document at once, edit that file and ru
 
 | Key | Action |
 |-----|--------|
-| `m` | mark / unmark email + advance cursor |
-| `ctrl+u` | clear all marks |
+| `m` | mark / unmark email (or every member of a ≡ merged row) + advance cursor |
+| `esc` | clear all marks |
 | `U` | undo last move or delete (reverses x, A, M* — not screener actions) |
 | `X  (Trash only)` | permanently delete marked or cursor email(s) — no undo |
 
@@ -99,7 +101,10 @@ To update both the help overlay and this document at once, edit that file and ru
 |-----|--------|
 | `<space>1 … <space>9` | jump to folder tab by number (Inbox=1, ToScreen=2, …) |
 | `<space>/` | IMAP search ALL emails on server (From + Subject) |
+| `<space>c` | contacts picker — browse harvested + [contacts] file names; / filter, y copy address, Y copy "Name <addr>", enter compose to contact |
 | `<space>S` | scan current folder for spy pixels (skips already scanned) |
+| `<space>h  (reader)` | show key mail headers (From, Reply-To, List-Id, List-Unsubscribe, Return-Path, spam verdicts, …) — press again for all headers, again to return to the email |
+| `<space>u  (reader)` | unsubscribe — List-Unsubscribe https link opens in $BROWSER, mailto: prefills a compose, else first body link mentioning "unsubscribe" |
 | `<space>d  (reader)` | download raw email source (.eml) to ~/Downloads |
 | `<space>n  (reader)` | append open email's sender to notify.txt (desktop notifications opt-in) |
 | `<space>N  (reader)` | append @domain of open email's sender to notify.txt |
@@ -132,17 +137,20 @@ To update both the help overlay and this document at once, edit that file and ru
 | `N` | jump to next unread email |
 | `ctrl+n` | mark all in current folder as read |
 | `R` | reload / refresh folder |
-| `r` | reply  (from inbox or reader) |
-| `ctrl+r` | reply-all — reply to sender + all CC recipients  (from inbox or reader) |
+| `r` | reply  (from inbox or reader; in Sent: reply to the original To) |
+| `ctrl+r` | reply-all — reply to sender + all CC recipients  (from inbox or reader; in Sent: original To + Cc) |
 | `ctrl+e` | react with emoji  (from inbox or reader) |
 | `f` | forward email  (from reader or inbox) |
 | `T` | show full conversation thread across folders  (from inbox or reader) |
+| `enter / l / T  (on ≡ merged row)` | open a merged group — every member across folders, newest first |
+| `V` | show all emails from this sender, across all folders  (from inbox) |
 | `c` | compose new email |
 | `ctrl+b  (compose/pre-send)` | toggle Cc+Bcc fields (both hidden by default) |
 | `ctrl+f  (compose/pre-send)` | cycle From address through all accounts + [[senders]] aliases |
 | `a  (pre-send)` | attach file via yazi file picker (or $NEOMD_FILE_PICKER) |
 | `D  (pre-send)` | remove last attachment |
 | `d  (pre-send)` | save to Drafts folder (IMAP APPEND with \Draft flag) |
+| `l  (pre-send)` | send later — queue in Scheduled folder (+2h, 17:30, tomorrow 09:00, …); the headless daemon delivers it |
 | `s  (pre-send)` | spell check — open in nvim with spell on, jump to first error |
 | `p  (pre-send)` | preview email in $BROWSER (images rendered, same as recipient sees) |
 | `e  (pre-send)` | re-open editor to edit body |
@@ -169,7 +177,13 @@ To update both the help overlay and this document at once, edit that file and ru
 | `:mark-read  / :mr` | mark all emails in current folder as read |
 | `:reload  / :r` | reload current folder |
 | `:check  / :ch` | show screener classification for selected email |
+| `:thread  / :t` | show full conversation for the selected email (across folders) |
+| `:scan-spy-pixels  / :ssp` | scan current folder for tracking pixels (background, skips already scanned) |
+| `:recover  / :rec` | reopen the most recent compose backup from ~/.cache/neomd/drafts/ |
 | `:everything  / :ev` | show latest 50 emails across all folders |
+| `:merge <title>  / :mg` | merge marked/cursor emails into a titled group (HEY-style); collapses to one ≡ row |
+| `:merge-sender <title>  / :mgs` | like :merge, plus future mail from the cursor email's sender joins automatically |
+| `:unmerge  / :umg` | on a ≡ row: dissolve the merge (y/n) · inside an opened merge: remove the cursor email |
 | `:search  / :se` | IMAP search all emails on server (From + Subject + To) |
 | `:delete-all  / :da` | permanently delete ALL emails in current folder (y/n) |
 | `:empty-trash  / :et` | permanently delete ALL emails in Trash (y/n) |

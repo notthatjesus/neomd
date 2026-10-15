@@ -24,6 +24,14 @@ type SenderConfig struct {
 	Account string `toml:"account"` // optional: account name whose SMTP to use
 }
 
+// ContactsConfig points at an optional user-maintained contacts file merged
+// into the harvested address→name cache at startup. Two formats are accepted:
+// simple lines ("addr,name", "addr<TAB>name", or "Name <addr>") and a Google
+// Contacts CSV export (contacts.google.com → Export → Google CSV).
+type ContactsConfig struct {
+	File string `toml:"file"`
+}
+
 // AccountConfig holds IMAP/SMTP connection settings.
 type AccountConfig struct {
 	Name        string `toml:"name"`
@@ -67,7 +75,8 @@ const keyringSentinel = "keyring"
 // keyring. After config.Load() resolves the keyring entry, Password holds
 // the actual password and this method returns false. The sentinel only
 // remains if keyring lookup failed (no entry yet, or service unavailable),
-// in which case downstream code can prompt the user via :set-password.
+// in which case the login fails until the entry is stored (service "neomd",
+// key "account/<name>/password").
 func (a AccountConfig) UseKeyring() bool {
 	return a.Password == keyringSentinel
 }
@@ -279,6 +288,7 @@ type UIConfig struct {
 	BulkProgressThreshold int             `toml:"bulk_progress_threshold"` // show progress counter for batches larger than this (default 10)
 	DraftBackupCount      int             `toml:"draft_backup_count"`      // rolling compose backups in ~/.cache/neomd/drafts/ (default 20, -1 = disabled)
 	MarkAsReadAfterSecs   int             `toml:"mark_as_read_after_secs"` // seconds in reader before marking as read (0 = immediate, default 7)
+	InstantFolderSwitch   *bool           `toml:"instant_folder_switch"`   // show the last-seen list at once and refresh behind it (default true)
 }
 
 // DraftBackups returns the max number of rolling draft backups (default 20, -1 = disabled).
@@ -295,6 +305,15 @@ func (u UIConfig) BulkThreshold() int {
 		return 10
 	}
 	return u.BulkProgressThreshold
+}
+
+// InstantSwitch reports whether folder switches show the cached list first
+// (default true). false restores the spinner-on-every-switch behavior.
+func (u UIConfig) InstantSwitch() bool {
+	if u.InstantFolderSwitch == nil {
+		return true
+	}
+	return *u.InstantFolderSwitch
 }
 
 // AutoScreen returns true if auto-screen-on-inbox-load is enabled (default: true).
@@ -354,6 +373,7 @@ type Config struct {
 	Senders []SenderConfig `toml:"senders"`
 
 	Screener      ScreenerConfig      `toml:"screener"`
+	Contacts      ContactsConfig      `toml:"contacts"`
 	Folders       FoldersConfig       `toml:"folders"`
 	UI            UIConfig            `toml:"ui"`
 	Notifications NotificationsConfig `toml:"notifications"`
@@ -367,7 +387,42 @@ type Config struct {
 	// composer and pre-send review so it's never a silent BCC.
 	AutoBCC string `toml:"auto_bcc"`
 
+	// DefaultFrom, if set, is the email address (bare or "Name <addr>") that
+	// new compose and no-match reply/forward should default the From field
+	// to, overriding the usual "first configured account" fallback. Matched
+	// against accounts first, then senders. Empty (the default) preserves
+	// prior behavior: the first account wins.
+	DefaultFrom string `toml:"default_from"`
+
 	Listmonk ListmonkConfig `toml:"listmonk"`
+
+	// OOO configures out-of-office auto-replies, processed by the headless
+	// daemon (--headless) only. Replies go solely to screened-in senders,
+	// once per sender per OOO period.
+	OOO OOOConfig `toml:"ooo"`
+
+	// OOOFile is the path to the optional ooo.toml sitting next to the
+	// loaded config.toml. When that file exists its contents replace the
+	// whole [ooo] block — it is the single file `make ooo` syncs to the
+	// headless server, and the daemon re-reads it every pass (hot reload,
+	// no restart needed). Set during Load(), not a TOML field.
+	OOOFile string `toml:"-"`
+	// MergesFile is <config dir>/merges.toml — user-defined merged threads
+	// (see internal/merge). Set during Load(), not a TOML field.
+	MergesFile string `toml:"-"`
+}
+
+// OOOConfig holds out-of-office auto-reply settings ([ooo] in config.toml).
+// Only the headless daemon acts on it; the TUI ignores this block.
+type OOOConfig struct {
+	Enabled  bool     `toml:"enabled"`
+	Accounts []string `toml:"accounts"`  // [[accounts]] names whose inboxes get auto-replies, each from its own address (e.g. ["Work", "WorkInfo"]); empty = the daemon's own account
+	Timezone string   `toml:"timezone"`  // IANA name (e.g. "Europe/Zurich") that from/until are interpreted in; empty = the daemon machine's local time
+	From     string   `toml:"from"`      // "YYYY-MM-DD" — active starting at 00:00 of this day (local time); empty = active immediately
+	Until    string   `toml:"until"`     // "YYYY-MM-DD" — active through the END of this day (local time); empty = active until enabled=false
+	Subject  string   `toml:"subject"`   // reply subject; default "Out of Office"
+	Body     string   `toml:"body"`      // reply body in markdown (same rendering as composed emails)
+	BodyFile string   `toml:"body_file"` // optional path to a markdown file; overrides body when set
 }
 
 // ListmonkTrigger maps a virtual email address to Listmonk list IDs.
@@ -458,6 +513,42 @@ func HistoryPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_cmd_history", os.Getuid()))
 }
 
+// AuditLogPath returns ~/.cache/neomd/moves.log — every server-side MOVE and
+// EXPUNGE neomd performs (TUI, daemon, CLI) is appended there.
+func AuditLogPath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "moves.log")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_moves.log", os.Getuid()))
+}
+
+// IMAPTracePath returns ~/.cache/neomd/imap-trace.log, the opt-in
+// (NEOMD_IMAP_TRACE=1) per-operation timing log. Same directory as moves.log.
+func IMAPTracePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "imap-trace.log")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_imap-trace.log", os.Getuid()))
+}
+
+// InlineImageDir returns ~/.cache/neomd/inline/, creating it if needed. Reply
+// and forward write the quoted mail's inline (cid:) images here so the send
+// pipeline can re-embed them like any local image.
+func InlineImageDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName, "inline")
+		_ = os.MkdirAll(p, 0o700)
+		return p
+	}
+	p := filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_inline", os.Getuid()))
+	_ = os.MkdirAll(p, 0o700)
+	return p
+}
+
 // DraftsBackupDir returns ~/.cache/neomd/drafts/, creating it if needed.
 func DraftsBackupDir() string {
 	if dir, err := os.UserCacheDir(); err == nil {
@@ -480,6 +571,36 @@ func CrashLogPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_crash.log", os.Getuid()))
 }
 
+// LoadOOOOverride parses an ooo.toml file holding a bare OOO block (top-level
+// enabled/until/subject/body/body_file keys). Returns nil when the file does
+// not exist, an error when it exists but is invalid TOML — the daemon logs
+// that and fails safe (no replies).
+func LoadOOOOverride(path string) (*OOOConfig, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+	var o OOOConfig
+	if _, err := toml.DecodeFile(path, &o); err != nil {
+		return nil, fmt.Errorf("parse ooo config %s: %w", path, err)
+	}
+	o.BodyFile = expandPath(o.BodyFile)
+	return &o, nil
+}
+
+// OOOCachePath returns the path for the out-of-office reply cache file
+// (which senders already received an auto-reply in the current OOO period).
+func OOOCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "ooo_replied")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_ooo_replied", os.Getuid()))
+}
+
 // SpyPixelCachePath returns the path for the spy pixel cache file.
 func SpyPixelCachePath() string {
 	if dir, err := os.UserCacheDir(); err == nil {
@@ -488,6 +609,17 @@ func SpyPixelCachePath() string {
 		return filepath.Join(p, "spy_pixels")
 	}
 	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_spy_pixels", os.Getuid()))
+}
+
+// ContactsCachePath returns the path for the harvested address→name cache
+// used to match name searches and decorate outgoing To/Cc headers.
+func ContactsCachePath() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		p := filepath.Join(dir, cacheDirName)
+		_ = os.MkdirAll(p, 0o700)
+		return filepath.Join(p, "contacts")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("neomd_%d_contacts", os.Getuid()))
 }
 
 // NotifyStatePath returns the path for the per-folder last-seen-UID baseline
@@ -553,6 +685,18 @@ func Load(path string) (*Config, error) {
 	cfg.Screener.PaperTrail = expandPath(cfg.Screener.PaperTrail)
 	cfg.Screener.Spam = expandPath(cfg.Screener.Spam)
 	cfg.Screener.Notify = expandPath(cfg.Screener.Notify)
+	cfg.Contacts.File = expandPath(cfg.Contacts.File)
+	cfg.OOO.BodyFile = expandPath(cfg.OOO.BodyFile)
+
+	// ooo.toml next to config.toml replaces the whole [ooo] block when it
+	// exists (single syncable file; the daemon also re-reads it every pass).
+	cfg.OOOFile = filepath.Join(filepath.Dir(path), "ooo.toml")
+	cfg.MergesFile = filepath.Join(filepath.Dir(path), "merges.toml")
+	if override, err := LoadOOOOverride(cfg.OOOFile); err != nil {
+		return nil, err
+	} else if override != nil {
+		cfg.OOO = *override
+	}
 
 	// Ensure screener list directories and files exist so appending (I/O/F/P/$)
 	// works on a fresh install without manual mkdir or touching files.
@@ -753,7 +897,7 @@ func resolveKeyringPassword(accountName, password string) string {
 		return resolved
 	}
 	if err == keyring.ErrNotFound {
-		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring entry not set — run :set-password %s\n", accountName, accountName)
+		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring entry not set — store the password in the OS keyring under service \"neomd\", key \"account/%s/password\" (docs: Configuration → Storing passwords in the OS keyring)\n", accountName, accountName)
 	} else {
 		fmt.Fprintf(os.Stderr, "neomd: account %q: keyring unavailable: %v\n", accountName, err)
 	}

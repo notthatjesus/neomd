@@ -5,11 +5,14 @@ package imap
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,13 +20,15 @@ import (
 	"time"
 
 	htmlmd "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/PuerkitoBio/goquery"
 	imap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message"
-	_ "github.com/emersion/go-message/charset" // register charset decoders for ISO-8859-1, Windows-1252, etc.
+	"github.com/emersion/go-message/charset" // charset decoders for ISO-8859-1, Windows-1252, etc. (bodies via go-message, envelopes via envelopeWordDecoder)
 	"github.com/emersion/go-message/mail"
 	"github.com/sspaeti/neomd/internal/mailtls"
 	"github.com/sspaeti/neomd/internal/oauth2"
+	"github.com/sspaeti/neomd/internal/schedule"
 )
 
 // Email is a fully parsed email message.
@@ -32,8 +37,10 @@ type Attachment struct {
 	Filename         string // from Content-Disposition filename or Content-Type name param
 	ContentType      string // e.g. "application/pdf"
 	ContentID        string // Content-ID without angle brackets (for inline cid: references)
-	Data             []byte
-	IsCalendarInvite bool // true for text/calendar parts or filenames ending in .ics
+	Data             []byte // nil when the part was left on the server (see Part)
+	IsCalendarInvite bool   // true for text/calendar parts or filenames ending in .ics
+	Size             uint32 // transfer size from BODYSTRUCTURE (0 when unknown)
+	Part             []int  // IMAP section path for FetchPart; set only by the lazy body fetch
 }
 
 type Email struct {
@@ -47,12 +54,17 @@ type Email struct {
 	Date          time.Time
 	Seen          bool
 	Answered      bool // \Answered flag — set when replied to from any client
+	Flagged       bool // \Flagged — the send-later daemon uses it as a claim marker
 	Folder        string
-	Size          uint32 // RFC822 size in bytes
-	HasAttachment bool   // true if BODYSTRUCTURE contains an attachment part
-	MessageID     string // Message-ID from envelope (for threading)
-	InReplyTo     string // first In-Reply-To message ID (for threading)
-	References    string // References header (space-separated Message-IDs for threading)
+	Size          uint32    // RFC822 size in bytes
+	HasAttachment bool      // true if BODYSTRUCTURE contains an attachment part
+	MessageID     string    // Message-ID from envelope (for threading)
+	InReplyTo     string    // first In-Reply-To message ID (for threading)
+	References    string    // References header (space-separated Message-IDs for threading)
+	SendAt        time.Time // parsed X-Neomd-Send-At — non-zero only for send-later queued messages
+	// BodyStructure is the BODYSTRUCTURE already fetched with the headers; it
+	// lets FetchBodyOf skip attachments on large mail without another round trip.
+	BodyStructure imap.BodyStructure `json:"-"`
 }
 
 // Config holds connection parameters.
@@ -83,6 +95,69 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, logger: slog.Default()}
 }
 
+// InferSecurity determines TLS/STARTTLS for an IMAP port: explicit
+// starttls=true is honored; 993 = implicit TLS, 143 = STARTTLS; non-standard
+// ports (e.g. Proton Mail Bridge) default to TLS for security.
+func InferSecurity(port string, userSTARTTLS bool) (useTLS, useSTARTTLS bool) {
+	if userSTARTTLS {
+		return false, true
+	}
+	switch port {
+	case "993":
+		return true, false
+	case "143":
+		return false, true
+	default:
+		return true, false
+	}
+}
+
+// auditPath is the file every server-side MOVE/EXPUNGE is appended to
+// (set via SetAuditLogPath, normally ~/.cache/neomd/moves.log). It exists so a
+// "mail vanished" report can be traced to the exact operation instead of
+// reconstructed from UIDs. Empty = disabled.
+var (
+	auditMu   sync.Mutex
+	auditPath string
+)
+
+// SetAuditLogPath enables (non-empty) or disables ("") the move audit log.
+func SetAuditLogPath(p string) {
+	auditMu.Lock()
+	defer auditMu.Unlock()
+	auditPath = p
+}
+
+// audit appends one timestamped line to the audit log; failures are ignored
+// (the log must never block or fail a mail operation).
+func audit(format string, args ...any) {
+	auditMu.Lock()
+	p := auditPath
+	auditMu.Unlock()
+	if p == "" {
+		return
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
+}
+
+// envelopeWordDecoder decodes RFC 2047 encoded-words in ENVELOPE fields
+// (From/To/Cc display names, Subject). go-imap falls back to Go's default
+// mime.WordDecoder, which only knows UTF-8, ISO-8859-1 and US-ASCII — an
+// Outlook sender's "=?Windows-1252?Q?...?=" name would then leak raw into the
+// inbox, reader and reply screens. go-message's charset.Reader covers
+// Windows-125x, ISO-8859-x, KOI8, Shift_JIS, GBK, etc.
+var envelopeWordDecoder = &mime.WordDecoder{CharsetReader: charset.Reader}
+
+// clientOptions builds the go-imap options every connection uses.
+func clientOptions(tlsCfg *tls.Config) *imapclient.Options {
+	return &imapclient.Options{TLSConfig: tlsCfg, WordDecoder: envelopeWordDecoder}
+}
+
 func (c *Client) addr() string {
 	return c.cfg.Host + ":" + c.cfg.Port
 }
@@ -97,7 +172,7 @@ func (c *Client) connect(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	opts := &imapclient.Options{TLSConfig: tlsCfg}
+	opts := clientOptions(tlsCfg)
 	var (
 		conn *imapclient.Client
 	)
@@ -111,7 +186,7 @@ func (c *Client) connect(_ context.Context) error {
 	}
 	if err != nil && mailtls.ShouldRetryInsecureLocalhost(c.cfg.Host, c.cfg.TLSCertFile, err) {
 		c.logger.Warn("retrying IMAP TLS connection with localhost self-signed certificate fallback", "host", c.cfg.Host, "port", c.cfg.Port)
-		opts = &imapclient.Options{TLSConfig: mailtls.InsecureLocalhostConfig(c.cfg.Host)}
+		opts = clientOptions(mailtls.InsecureLocalhostConfig(c.cfg.Host))
 		switch {
 		case c.cfg.TLS:
 			conn, err = imapclient.DialTLS(addr, opts)
@@ -224,9 +299,35 @@ func (c *Client) selectMailbox(mailbox string) error {
 		return nil
 	}
 	if _, err := c.conn.Select(mailbox, nil).Wait(); err != nil {
+		c.selectedMailbox = "" // a failed SELECT leaves no mailbox selected (RFC 9051 §6.3.2)
 		return fmt.Errorf("SELECT %q: %w", mailbox, err)
 	}
 	c.selectedMailbox = mailbox
+	return nil
+}
+
+// beginSelect sends SELECT without waiting when folder is not the cached
+// selection, so the caller can pipeline its first command behind it (RFC
+// 9051 §5.5). Returns nil when no SELECT was needed.
+func (c *Client) beginSelect(conn *imapclient.Client, folder string) *imapclient.SelectCommand {
+	if c.selectedMailbox == folder {
+		return nil
+	}
+	return conn.Select(folder, nil)
+}
+
+// endSelect waits for a beginSelect command and records the selection only
+// on success. The caller must still Wait() its pipelined command afterwards
+// (to drain its response) even when this returns an error.
+func (c *Client) endSelect(cmd *imapclient.SelectCommand, folder string) error {
+	if cmd == nil {
+		return nil
+	}
+	if _, err := cmd.Wait(); err != nil {
+		c.selectedMailbox = ""
+		return fmt.Errorf("SELECT %q: %w", folder, err)
+	}
+	c.selectedMailbox = folder
 	return nil
 }
 
@@ -260,6 +361,10 @@ func (c *Client) Addr() string { return c.addr() }
 // User returns the IMAP username.
 func (c *Client) User() string { return c.cfg.User }
 
+// ConfigCopy returns the connection config so a second client (background
+// connection) can be built with identical credentials and TokenSource.
+func (c *Client) ConfigCopy() Config { return c.cfg }
+
 // Ping tests the IMAP connection by issuing a NOOP command.
 func (c *Client) Ping(ctx context.Context) error {
 	if ctx == nil {
@@ -271,18 +376,65 @@ func (c *Client) Ping(ctx context.Context) error {
 }
 
 // FetchHeaders fetches the latest n message summaries from folder.
+// sendAtHeaderSection requests only the X-Neomd-Send-At header field (peek,
+// so \Seen is untouched) — it identifies send-later queued messages so the UI
+// can mark them, without ever mutating the stored message.
+func sendAtHeaderSection() []*imap.FetchItemBodySection {
+	return []*imap.FetchItemBodySection{{
+		Specifier:    imap.PartSpecifierHeader,
+		HeaderFields: []string{schedule.HeaderSendAt},
+		Peek:         true,
+	}}
+}
+
+// parseSendAtSection extracts the RFC 3339 time from a fetched
+// X-Neomd-Send-At header-fields section. Zero time when absent.
+func parseSendAtSection(sections []imapclient.FetchBodySectionBuffer) time.Time {
+	if len(sections) == 0 {
+		return time.Time{}
+	}
+	for _, line := range strings.Split(string(sections[0].Bytes), "\r\n") {
+		if i := strings.IndexByte(line, ':'); i > 0 && strings.EqualFold(strings.TrimSpace(line[:i]), schedule.HeaderSendAt) {
+			if at, err := time.Parse(time.RFC3339, strings.TrimSpace(line[i+1:])); err == nil {
+				return at
+			}
+		}
+	}
+	return time.Time{}
+}
+
 func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Email, error) {
+	defer trace(time.Now(), "FetchHeaders %s n=%d", folder, n)
+	return c.fetchHeadersWindow(ctx, folder, n, nil)
+}
+
+// FetchMoreHeaders is the "load more" page: the n most recently received
+// messages of folder whose UIDs are not in loaded, newest first. Empty when
+// every message is loaded. n must be > 0.
+func (c *Client) FetchMoreHeaders(ctx context.Context, folder string, n int, loaded map[uint32]bool) ([]Email, error) {
+	defer trace(time.Now(), "FetchMoreHeaders %s n=%d loaded=%d", folder, n, len(loaded))
+	if n <= 0 {
+		return nil, nil
+	}
+	return c.fetchHeadersWindow(ctx, folder, n, loaded)
+}
+
+// fetchHeadersWindow fetches headers of the n most recently received messages
+// of folder (all when n == 0), skipping UIDs in exclude, newest first.
+func (c *Client) fetchHeadersWindow(ctx context.Context, folder string, n int, exclude map[uint32]bool) ([]Email, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	var emails []Email
 	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		emails = nil // reset on retry to avoid duplicates
-		if err := c.selectMailbox(folder); err != nil {
+		sel := c.beginSelect(conn, folder)
+		srch := conn.UIDSearch(&imap.SearchCriteria{}, nil)
+		if err := c.endSelect(sel, folder); err != nil {
+			_, _ = srch.Wait() // drain the pipelined response
 			return err
 		}
-
-		searchData, err := conn.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+		searchData, err := srch.Wait()
 		if err != nil {
 			return fmt.Errorf("UID SEARCH: %w", err)
 		}
@@ -292,18 +444,31 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			return nil
 		}
 		allUIDs, _ := uidSet.Nums()
+		if len(exclude) > 0 {
+			kept := allUIDs[:0]
+			for _, u := range allUIDs {
+				if !exclude[uint32(u)] {
+					kept = append(kept, u)
+				}
+			}
+			allUIDs = kept
+		}
 		if len(allUIDs) == 0 {
 			return nil
 		}
 
-		// Take the last n UIDs (most recent) and reverse to newest-first.
-		// n=0 means no limit — fetch all.
+		// Window: the n most recently received messages, newest first.
+		// n=0 means no limit — fetch all (UID-descending, no extra round trip).
 		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
 		if n > 0 && len(allUIDs) > n {
-			allUIDs = allUIDs[len(allUIDs)-n:]
-		}
-		for i, j := 0, len(allUIDs)-1; i < j; i, j = i+1, j-1 {
-			allUIDs[i], allUIDs[j] = allUIDs[j], allUIDs[i]
+			allUIDs, err = newestUIDsByInternalDate(conn, allUIDs, n)
+			if err != nil {
+				return err
+			}
+		} else {
+			for i, j := 0, len(allUIDs)-1; i < j; i, j = i+1, j-1 {
+				allUIDs[i], allUIDs[j] = allUIDs[j], allUIDs[i]
+			}
 		}
 
 		var fetchSet imap.UIDSet
@@ -317,6 +482,7 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+			BodySection:   sendAtHeaderSection(),
 		}).Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
@@ -332,13 +498,16 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			if !ok {
 				continue
 			}
-			e := Email{UID: uint32(m.UID), Folder: folder}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
 				}
 				if f == imap.FlagAnswered {
 					e.Answered = true
+				}
+				if f == imap.FlagFlagged {
+					e.Flagged = true
 				}
 			}
 			if m.Envelope != nil {
@@ -355,21 +524,21 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 				if len(m.Envelope.To) > 0 {
 					to := make([]string, 0, len(m.Envelope.To))
 					for _, a := range m.Envelope.To {
-						to = append(to, a.Addr())
+						to = append(to, formatEnvelopeAddr(a))
 					}
 					e.To = strings.Join(to, ", ")
 				}
 				if len(m.Envelope.Cc) > 0 {
 					cc := make([]string, 0, len(m.Envelope.Cc))
 					for _, a := range m.Envelope.Cc {
-						cc = append(cc, a.Addr())
+						cc = append(cc, formatEnvelopeAddr(a))
 					}
 					e.CC = strings.Join(cc, ", ")
 				}
 				if len(m.Envelope.Bcc) > 0 {
 					bcc := make([]string, 0, len(m.Envelope.Bcc))
 					for _, a := range m.Envelope.Bcc {
-						bcc = append(bcc, a.Addr())
+						bcc = append(bcc, formatEnvelopeAddr(a))
 					}
 					e.BCC = strings.Join(bcc, ", ")
 				}
@@ -385,11 +554,53 @@ func (c *Client) FetchHeaders(ctx context.Context, folder string, n int) ([]Emai
 			}
 			e.Size = uint32(m.RFC822Size)
 			e.HasAttachment = hasAttachment(m.BodyStructure)
+			e.BodyStructure = m.BodyStructure
 			emails = append(emails, e)
 		}
 		return nil
 	})
 	return emails, err
+}
+
+// newestUIDsByInternalDate narrows uids (in the selected mailbox) to the n most
+// recently received, newest first, by INTERNALDATE (ties broken by UID).
+//
+// "Highest n UIDs" is not "newest n": MOVE/COPY give a message a fresh,
+// highest UID in the destination mailbox (RFC 9051 per-mailbox UIDs), so mail
+// bulk-moved back into a folder — screener approve, `:reset-toscreen`, undo —
+// fills a UID-selected window and pushes recent mail below the cutoff
+// (issue #34). INTERNALDATE survives MOVE/COPY on every server tested.
+// One cheap FETCH (UID INTERNALDATE) for all uids; the SORT extension is not
+// used because Infomaniak and others do not offer it.
+func newestUIDsByInternalDate(conn *imapclient.Client, uids []imap.UID, n int) ([]imap.UID, error) {
+	var set imap.UIDSet
+	set.AddNum(uids...)
+	msgs, err := conn.Fetch(set, &imap.FetchOptions{UID: true, InternalDate: true}).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("FETCH INTERNALDATE: %w", err)
+	}
+	type arrival struct {
+		uid imap.UID
+		t   time.Time
+	}
+	arr := make([]arrival, 0, len(msgs))
+	for _, m := range msgs {
+		arr = append(arr, arrival{m.UID, m.InternalDate})
+	}
+	sort.Slice(arr, func(i, j int) bool {
+		if !arr[i].t.Equal(arr[j].t) {
+			return arr[i].t.After(arr[j].t)
+		}
+		return arr[i].uid > arr[j].uid
+	})
+	if len(arr) > n {
+		arr = arr[:n]
+	}
+	out := make([]imap.UID, len(arr))
+	for i, a := range arr {
+		out[i] = a.uid
+	}
+	return out, nil
 }
 
 // SearchUIDs returns all UIDs in folder without fetching any headers.
@@ -398,13 +609,17 @@ func (c *Client) SearchUIDs(ctx context.Context, folder string) ([]uint32, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "SearchUIDs %s", folder)
 	var uids []uint32
 	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		uids = nil // reset on retry
-		if err := c.selectMailbox(folder); err != nil {
+		sel := c.beginSelect(conn, folder)
+		srch := conn.UIDSearch(&imap.SearchCriteria{}, nil)
+		if err := c.endSelect(sel, folder); err != nil {
+			_, _ = srch.Wait() // drain the pipelined response
 			return err
 		}
-		searchData, err := conn.UIDSearch(&imap.SearchCriteria{}, nil).Wait()
+		searchData, err := srch.Wait()
 		if err != nil {
 			return fmt.Errorf("UID SEARCH: %w", err)
 		}
@@ -429,22 +644,34 @@ func (c *Client) FetchUnseenCounts(ctx context.Context, folders map[string]strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "FetchUnseenCounts %d folders", len(folders))
 	var counts map[string]int
 	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		counts = make(map[string]int, len(folders)) // reset on retry
+		// Send every STATUS before waiting for any: one round trip instead of
+		// one per folder. STATUS depends on nothing the client has to read first.
+		type inflight struct {
+			label string
+			cmd   *imapclient.StatusCommand
+		}
+		cmds := make([]inflight, 0, len(folders))
 		for label, mailbox := range folders {
-			data, err := conn.Status(mailbox, &imap.StatusOptions{NumUnseen: true}).Wait()
+			cmds = append(cmds, inflight{label, conn.Status(mailbox, &imap.StatusOptions{NumUnseen: true})})
+		}
+		var netErr error
+		for _, f := range cmds {
+			data, err := f.cmd.Wait()
 			if err != nil {
-				if isNetErr(err) {
-					return err // let withConnRetry reconnect
+				if isNetErr(err) && netErr == nil {
+					netErr = err // keep draining the rest, then let withConnRetry reconnect
 				}
 				continue // folder may not exist; skip
 			}
 			if data.NumUnseen != nil {
-				counts[label] = int(*data.NumUnseen)
+				counts[f.label] = int(*data.NumUnseen)
 			}
 		}
-		return nil
+		return netErr
 	})
 	return counts, err
 }
@@ -480,23 +707,32 @@ func hasAttachment(bs imap.BodyStructure) bool {
 // Supports prefixes: "from:x", "subject:x", "to:x". Plain text searches all three.
 // Searches ALL messages on the server, not just loaded ones.
 func (c *Client) SearchMessages(ctx context.Context, folder, query string) ([]Email, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if query == "" {
 		return nil, nil
 	}
+	return c.searchFolder(ctx, folder, buildSearchCriteria(query))
+}
 
-	criteria := buildSearchCriteria(query)
+// searchFolderCap bounds the headers fetched per folder by searchFolder.
+var searchFolderCap = 100
 
+// searchFolder runs UID SEARCH with criteria in folder and fetches the
+// newest searchFolderCap matching headers.
+func (c *Client) searchFolder(ctx context.Context, folder string, criteria *imap.SearchCriteria) ([]Email, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	defer trace(time.Now(), "searchFolder %s", folder)
 	var uids []uint32
 	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		uids = nil // reset on retry
-		if err := c.selectMailbox(folder); err != nil {
+		sel := c.beginSelect(conn, folder)
+		srch := conn.UIDSearch(criteria, nil)
+		if err := c.endSelect(sel, folder); err != nil {
+			_, _ = srch.Wait() // drain the pipelined response
 			return err
 		}
-
-		searchData, err := conn.UIDSearch(criteria, nil).Wait()
+		searchData, err := srch.Wait()
 		if err != nil {
 			return fmt.Errorf("UID SEARCH: %w", err)
 		}
@@ -505,6 +741,14 @@ func (c *Client) SearchMessages(ctx context.Context, folder, query string) ([]Em
 			return nil
 		}
 		nums, _ := uidSet.Nums()
+		// Cap results per folder to avoid huge fetches: keep the most
+		// recently received matches (INTERNALDATE, not highest UID).
+		if len(nums) > searchFolderCap {
+			nums, err = newestUIDsByInternalDate(conn, nums, searchFolderCap)
+			if err != nil {
+				return err
+			}
+		}
 		for _, u := range nums {
 			uids = append(uids, uint32(u))
 		}
@@ -515,11 +759,6 @@ func (c *Client) SearchMessages(ctx context.Context, folder, query string) ([]Em
 	}
 	if len(uids) == 0 {
 		return nil, nil
-	}
-
-	// Cap results per folder to avoid huge fetches
-	if len(uids) > 100 {
-		uids = uids[len(uids)-100:] // keep newest (highest UIDs)
 	}
 
 	return c.FetchHeadersByUID(ctx, folder, uids)
@@ -541,6 +780,57 @@ func (c *Client) SearchAllFolders(ctx context.Context, folders []string, query s
 		all = append(all, emails...)
 	}
 	return all, nil
+}
+
+// SearchByMessageIDs returns, across folders, every message whose
+// Message-ID is one of ids OR whose In-Reply-To points at one of ids —
+// the members of a user-merged thread plus direct replies to them.
+// Folders that fail to SELECT are skipped, like SearchAllFolders.
+func (c *Client) SearchByMessageIDs(ctx context.Context, folders []string, ids []string) ([]Email, error) {
+	criteria := messageIDCriteria(ids)
+	if criteria == nil {
+		return nil, nil
+	}
+	var all []Email
+	for _, folder := range folders {
+		emails, err := c.searchFolder(ctx, folder, criteria)
+		if err != nil {
+			continue
+		}
+		all = append(all, emails...)
+	}
+	return all, nil
+}
+
+// messageIDCriteria builds OR(HEADER Message-ID id, HEADER In-Reply-To id, …)
+// for every id. Angle brackets are stripped: HEADER is a substring match and
+// servers differ on whether they index the brackets.
+func messageIDCriteria(ids []string) *imap.SearchCriteria {
+	var parts []imap.SearchCriteria
+	for _, id := range ids {
+		id = strings.Trim(strings.TrimSpace(id), "<>")
+		if id == "" {
+			continue
+		}
+		parts = append(parts,
+			imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "Message-ID", Value: id}}},
+			imap.SearchCriteria{Header: []imap.SearchCriteriaHeaderField{{Key: "In-Reply-To", Value: id}}},
+		)
+	}
+	return orCriteria(parts)
+}
+
+// orCriteria folds cs into a right-nested OR tree (go-imap only has binary OR).
+func orCriteria(cs []imap.SearchCriteria) *imap.SearchCriteria {
+	switch len(cs) {
+	case 0:
+		return nil
+	case 1:
+		c := cs[0]
+		return &c
+	}
+	rest := orCriteria(cs[1:])
+	return &imap.SearchCriteria{Or: [][2]imap.SearchCriteria{{cs[0], *rest}}}
 }
 
 // FetchConversation searches across folders for emails related to the given
@@ -584,6 +874,19 @@ func participantMatch(e Email, participants map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// formatEnvelopeAddr renders an envelope address as "Name <addr>" when a
+// display name is present, falling back to the bare address. Names containing
+// characters that would break naive comma-splitting of the joined field
+// (",", "<", ">", `"`) are dropped so SplitAddrs and RCPT extraction stay safe.
+func formatEnvelopeAddr(a imap.Address) string {
+	addr := a.Addr()
+	name := strings.TrimSpace(a.Name)
+	if name == "" || name == addr || strings.ContainsAny(name, `,<>"`) {
+		return addr
+	}
+	return name + " <" + addr + ">"
 }
 
 // SplitAddrs splits a comma-separated address field and extracts bare lowercase addresses.
@@ -649,21 +952,13 @@ func buildSearchCriteria(query string) *imap.SearchCriteria {
 	}
 }
 
-// FetchLatest fetches the N most recent emails (by UID, descending) from a folder.
-// Uses UID SEARCH ALL to get all UIDs, takes the last N, and fetches headers.
+// FetchLatest fetches the n most recently received emails from a folder,
+// newest first — the same INTERNALDATE window as FetchHeaders (n must be > 0).
 func (c *Client) FetchLatest(ctx context.Context, folder string, n int) ([]Email, error) {
-	uids, err := c.SearchUIDs(ctx, folder)
-	if err != nil {
-		return nil, err
-	}
-	if len(uids) == 0 {
+	if n <= 0 {
 		return nil, nil
 	}
-	// UIDs are ascending; take the last N (newest)
-	if len(uids) > n {
-		uids = uids[len(uids)-n:]
-	}
-	return c.FetchHeadersByUID(ctx, folder, uids)
+	return c.FetchHeaders(ctx, folder, n)
 }
 
 // FetchLatestAllFolders fetches the N most recent emails across all given folders,
@@ -697,37 +992,45 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "FetchHeadersByUID %s count=%d", folder, len(uids))
 	if len(uids) == 0 {
 		return nil, nil
 	}
 	var emails []Email
 	err := c.withConnRetry(ctx, func(conn *imapclient.Client) error {
 		emails = nil // reset on retry
-		if err := c.selectMailbox(folder); err != nil {
-			return err
-		}
+		sel := c.beginSelect(conn, folder)
 		var fetchSet imap.UIDSet
 		for _, uid := range uids {
 			fetchSet.AddNum(imap.UID(uid))
 		}
-		msgs, err := conn.Fetch(fetchSet, &imap.FetchOptions{
+		fetchCmd := conn.Fetch(fetchSet, &imap.FetchOptions{
 			UID:           true,
 			Flags:         true,
 			Envelope:      true,
 			RFC822Size:    true,
 			BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
-		}).Collect()
+			BodySection:   sendAtHeaderSection(),
+		})
+		if err := c.endSelect(sel, folder); err != nil {
+			_, _ = fetchCmd.Collect()
+			return err
+		}
+		msgs, err := fetchCmd.Collect()
 		if err != nil {
 			return fmt.Errorf("FETCH headers: %w", err)
 		}
 		for _, m := range msgs {
-			e := Email{UID: uint32(m.UID), Folder: folder}
+			e := Email{UID: uint32(m.UID), Folder: folder, SendAt: parseSendAtSection(m.BodySection)}
 			for _, f := range m.Flags {
 				if f == imap.FlagSeen {
 					e.Seen = true
 				}
 				if f == imap.FlagAnswered {
 					e.Answered = true
+				}
+				if f == imap.FlagFlagged {
+					e.Flagged = true
 				}
 			}
 			if m.Envelope != nil {
@@ -744,27 +1047,28 @@ func (c *Client) FetchHeadersByUID(ctx context.Context, folder string, uids []ui
 				if len(m.Envelope.To) > 0 {
 					to := make([]string, 0, len(m.Envelope.To))
 					for _, a := range m.Envelope.To {
-						to = append(to, a.Addr())
+						to = append(to, formatEnvelopeAddr(a))
 					}
 					e.To = strings.Join(to, ", ")
 				}
 				if len(m.Envelope.Cc) > 0 {
 					cc := make([]string, 0, len(m.Envelope.Cc))
 					for _, a := range m.Envelope.Cc {
-						cc = append(cc, a.Addr())
+						cc = append(cc, formatEnvelopeAddr(a))
 					}
 					e.CC = strings.Join(cc, ", ")
 				}
 				if len(m.Envelope.Bcc) > 0 {
 					bcc := make([]string, 0, len(m.Envelope.Bcc))
 					for _, a := range m.Envelope.Bcc {
-						bcc = append(bcc, a.Addr())
+						bcc = append(bcc, formatEnvelopeAddr(a))
 					}
 					e.BCC = strings.Join(bcc, ", ")
 				}
 			}
 			e.Size = uint32(m.RFC822Size)
 			e.HasAttachment = hasAttachment(m.BodyStructure)
+			e.BodyStructure = m.BodyStructure
 			emails = append(emails, e)
 		}
 		return nil
@@ -778,6 +1082,7 @@ func (c *Client) FetchBody(ctx context.Context, folder string, uid uint32) (stri
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "FetchBody %s uid=%d", folder, uid)
 	var markdown, rawHTML, webURL, references string
 	var attachments []Attachment
 	var spyPixels SpyPixelInfo
@@ -907,13 +1212,16 @@ func (c *Client) FetchRaw(ctx context.Context, folder string, uid uint32) ([]byt
 
 // MoveMessage moves uid from src to dst using the IMAP MOVE command (RFC 6851).
 // Returns the UID assigned at the destination (may differ from src UID on some
-// servers). Falls back to the original uid if the server does not report UIDPLUS
+// servers). Returns 0 as destUID if the server does not report UIDPLUS (undo then skips the move)
 // COPYUID data. Callers that need the dest UID for undo should capture it.
 func (c *Client) MoveMessage(ctx context.Context, src string, uid uint32, dst string) (destUID uint32, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	destUID = uid // default: assume same UID
+	defer trace(time.Now(), "MoveMessage %s uid=%d -> %s", src, uid, dst)
+	// destUID stays 0 unless the server reports the new UID (UIDPLUS COPYUID).
+	// Guessing "same UID" would let undo move an unrelated message that happens
+	// to carry that UID in the destination folder.
 	err = c.withConn(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(src); err != nil {
 			return err
@@ -949,9 +1257,16 @@ func (c *Client) MoveMessage(ctx context.Context, src string, uid uint32, dst st
 				}
 			}
 		}
-		c.selectedMailbox = ""
+		// The source mailbox stays selected after MOVE (RFC 9051 §6.4.8); the
+		// server's untagged EXPUNGE responses are consumed by go-imap and every
+		// later operation is UID-addressed, so no re-SELECT is needed. Clearing
+		// the cache here cost one extra round trip per MOVE.
+		audit("MOVE %s uid=%d -> %s destUID=%d", src, uid, dst, destUID)
 		return nil
 	})
+	if err != nil {
+		audit("MOVE-FAILED %s uid=%d -> %s err=%v", src, uid, dst, err)
+	}
 	return destUID, err
 }
 
@@ -992,6 +1307,7 @@ func (c *Client) ExpungeAll(ctx context.Context, folder string, uids []uint32) e
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "ExpungeAll %s count=%d", folder, len(uids))
 	if len(uids) == 0 {
 		return nil
 	}
@@ -1016,6 +1332,7 @@ func (c *Client) ExpungeAll(ctx context.Context, folder string, uids []uint32) e
 			return fmt.Errorf("UID EXPUNGE: %w", err)
 		}
 		c.selectedMailbox = ""
+		audit("EXPUNGE %s uids=%v", folder, uids)
 		return nil
 	})
 }
@@ -1025,6 +1342,7 @@ func (c *Client) MarkSeen(ctx context.Context, folder string, uid uint32) error 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "MarkSeen %s uid=%d", folder, uid)
 	return c.withConn(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -1043,6 +1361,7 @@ func (c *Client) MarkUnseen(ctx context.Context, folder string, uid uint32) erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer trace(time.Now(), "MarkUnseen %s uid=%d", folder, uid)
 	return c.withConn(ctx, func(conn *imapclient.Client) error {
 		if err := c.selectMailbox(folder); err != nil {
 			return err
@@ -1070,6 +1389,26 @@ func (c *Client) MarkAnswered(ctx context.Context, folder string, uid uint32) er
 		return conn.Store(uidSet, &imap.StoreFlags{
 			Op:    imap.StoreFlagsAdd,
 			Flags: []imap.Flag{imap.FlagAnswered},
+		}, nil).Close()
+	})
+}
+
+// MarkFlagged adds the \Flagged flag. The send-later daemon sets it to claim
+// a due queued message before SMTP delivery, so a crash mid-send can never
+// deliver twice — a flagged message is skipped on later scans.
+func (c *Client) MarkFlagged(ctx context.Context, folder string, uid uint32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return c.withConn(ctx, func(conn *imapclient.Client) error {
+		if err := c.selectMailbox(folder); err != nil {
+			return err
+		}
+		var uidSet imap.UIDSet
+		uidSet.AddNum(imap.UID(uid))
+		return conn.Store(uidSet, &imap.StoreFlags{
+			Op:    imap.StoreFlagsAdd,
+			Flags: []imap.Flag{imap.FlagFlagged},
 		}, nil).Close()
 	})
 }
@@ -1267,6 +1606,11 @@ func parseBody(raw []byte) (markdown, rawHTML, webURL string, attachments []Atta
 		// Normalization adds trailing spaces for hard line breaks, which would
 		// mutate the draft content on each save/reopen cycle.
 		if isDraft {
+			// Only the wire line endings are undone: BuildDraftMessage writes
+			// CRLF, and a reopened draft mixed into the LF prelude would show
+			// ^M on every body line in the editor and drift on each re-save.
+			plainText = strings.ReplaceAll(plainText, "\r\n", "\n")
+			plainText = strings.ReplaceAll(plainText, "\r", "\n")
 			return plainText, "", webURL, attachments, references, SpyPixelInfo{}
 		}
 		return normalizePlainText(plainText), "", webURL, attachments, references, SpyPixelInfo{}
@@ -1348,11 +1692,57 @@ func htmlToMarkdown(h string) (string, SpyPixelInfo) {
 	})
 
 	converter := htmlmd.NewConverter("", true, nil)
+	converter.AddRules(sizedImageRule)
 	result, err := converter.ConvertString(h)
 	if err != nil {
 		return stripHTMLFallback(h), spy
 	}
 	return cleanMarkdown(strings.TrimSpace(result)), spy
+}
+
+// sizedImageRule mirrors html-to-markdown's default <img> rule but carries an
+// explicit width/height (attribute or inline style, px) as the image title in
+// the form "WxH" — e.g. ![Logo](https://x/logo.png "70x70"). Markdown has no
+// image size, so without this a signature logo constrained to 70px comes back
+// at its natural size in every reply that quotes it. render.ToHTML turns the
+// marker back into width/height attributes; the marker is plain CommonMark, so
+// drafts and the editor round-trip it unchanged.
+var sizedImageRule = htmlmd.Rule{
+	Filter: []string{"img"},
+	Replacement: func(content string, selec *goquery.Selection, opt *htmlmd.Options) *string {
+		src := strings.TrimSpace(selec.AttrOr("src", ""))
+		if src == "" {
+			return htmlmd.String("")
+		}
+		src = opt.GetAbsoluteURL(selec, src, "")
+		alt := strings.ReplaceAll(selec.AttrOr("alt", ""), "\n", " ")
+		w := imageDimension(selec, "width")
+		h := imageDimension(selec, "height")
+		text := "![" + alt + "](" + src
+		if w != "" || h != "" {
+			text += ` "` + w + "x" + h + `"`
+		}
+		text += ")"
+		return &text
+	},
+}
+
+var stylePxRe = map[string]*regexp.Regexp{
+	"width":  regexp.MustCompile(`(?i)(?:^|;)\s*width\s*:\s*(\d+)px`),
+	"height": regexp.MustCompile(`(?i)(?:^|;)\s*height\s*:\s*(\d+)px`),
+}
+var digitsRe = regexp.MustCompile(`^\d+$`)
+
+// imageDimension returns the pixel value of an <img>'s width/height from the
+// attribute ("70", "70px") or the inline style ("width:70px"), else "".
+func imageDimension(selec *goquery.Selection, dim string) string {
+	if v := strings.TrimSuffix(strings.TrimSpace(selec.AttrOr(dim, "")), "px"); digitsRe.MatchString(v) {
+		return v
+	}
+	if m := stylePxRe[dim].FindStringSubmatch(selec.AttrOr("style", "")); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // SpyPixelInfo holds the results of tracking pixel detection.

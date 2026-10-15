@@ -52,6 +52,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "neomd: config error: %v\n", err)
 		os.Exit(1)
 	}
+	goIMAP.SetAuditLogPath(config.AuditLogPath()) // every MOVE/EXPUNGE → ~/.cache/neomd/moves.log
+	if os.Getenv("NEOMD_IMAP_TRACE") == "1" {
+		goIMAP.SetTracePath(config.IMAPTracePath()) // per-operation timings → ~/.cache/neomd/imap-trace.log
+	}
 
 	accounts := cfg.ActiveAccounts()
 	if len(accounts) == 0 {
@@ -123,6 +127,63 @@ func main() {
 		}
 	}()
 
+	// Second connection per account for background housekeeping (tab counts,
+	// 5-minute sync, spy scan, prefetch) so it never queues behind a user action.
+	bgClients := make([]*goIMAP.Client, len(imapClients))
+	for i, c := range imapClients {
+		if c != nil {
+			bgClients[i] = goIMAP.New(c.ConfigCopy())
+		}
+	}
+	defer func() {
+		for _, c := range bgClients {
+			if c != nil {
+				c.Close()
+			}
+		}
+	}()
+
+	// `neomd list ...` — read-only JSON dump of folder headers for external
+	// widgets (e.g. the omarchy bar plugin). Uses the first IMAP-enabled
+	// account, prints one JSON object, exits 0 even on failure.
+	if flag.NArg() > 0 && flag.Arg(0) == "list" {
+		var listCli *goIMAP.Client
+		accName := ""
+		for i, c := range imapClients {
+			if c != nil {
+				listCli = c
+				accName = accounts[i].Name
+				break
+			}
+		}
+		if listCli == nil {
+			writeListJSON(os.Stdout, listOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runList(ctx, cfg.Folders, accName, listCli, flag.Args()[1:], os.Stdout)
+		listCli.Close()
+		os.Exit(code)
+	}
+
+	// `neomd read --folder <label> --uid <n>` — one message body as JSON for
+	// the widget's in-panel reader. BODY.PEEK: never marks the mail as read.
+	if flag.NArg() > 0 && flag.Arg(0) == "read" {
+		var readCli *goIMAP.Client
+		for _, c := range imapClients {
+			if c != nil {
+				readCli = c
+				break
+			}
+		}
+		if readCli == nil {
+			writeReadJSON(os.Stdout, readOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runRead(ctx, cfg.Folders, readCli, flag.Args()[1:], os.Stdout)
+		readCli.Close()
+		os.Exit(code)
+	}
+
 	// Screener (shared across accounts — same allowlist files).
 	sc, err := screener.New(screener.Config{
 		ScreenedIn:  cfg.Screener.ScreenedIn,
@@ -135,6 +196,26 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "neomd: screener error: %v\n", err)
 		os.Exit(1)
+	}
+
+	// `neomd screen --from <addr> --action in|out|feed|paper` — classify a
+	// sender from an external widget: screener list update + sender-level
+	// ToScreen move, same semantics as the TUI's I/O/F/P keys.
+	if flag.NArg() > 0 && flag.Arg(0) == "screen" {
+		var screenCli *goIMAP.Client
+		for _, c := range imapClients {
+			if c != nil {
+				screenCli = c
+				break
+			}
+		}
+		if screenCli == nil {
+			writeScreenJSON(os.Stdout, screenOutput{Error: "no IMAP-enabled account configured"})
+			os.Exit(0)
+		}
+		code := runScreen(ctx, cfg.Folders, sc, screenCli, flag.Args()[1:], os.Stdout)
+		screenCli.Close()
+		os.Exit(code)
 	}
 
 	// Fork: run either headless daemon or TUI
@@ -165,7 +246,7 @@ func main() {
 		if mailtoURI != "" {
 			mailto = parseMailto(mailtoURI)
 		}
-		model := ui.New(cfg, imapClients, sc, mailto)
+		model := ui.New(cfg, imapClients, sc, mailto).WithBackgroundClients(bgClients)
 
 		p := tea.NewProgram(
 			model,
@@ -247,17 +328,5 @@ func parseMailtoQuery(raw string) func(string) string {
 }
 
 func inferIMAPSecurity(port string, userSTARTTLS bool) (useTLS, useSTARTTLS bool) {
-	if userSTARTTLS {
-		// User explicitly set starttls=true in config — honor it.
-		return false, true
-	}
-	switch port {
-	case "993":
-		return true, false // Standard IMAPS (implicit TLS)
-	case "143":
-		return false, true // Standard IMAP (STARTTLS upgrade)
-	default:
-		// Non-standard port (e.g., Proton Mail Bridge): default to TLS for security.
-		return true, false
-	}
+	return goIMAP.InferSecurity(port, userSTARTTLS)
 }
