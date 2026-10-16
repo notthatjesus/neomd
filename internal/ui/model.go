@@ -1055,6 +1055,17 @@ func (m *Model) refreshInboxDelegate() {
 	m.inbox.SetDelegate(m.emailDelegateForActiveAccount())
 }
 
+func (m Model) sentDraftsIMAPClient() *imap.Client {
+	if m.cfg != nil && m.cfg.StoreSentDraftsInSendingAccount {
+		return m.imapCliForAccount(m.presendSMTPAccount().Name)
+	}
+	return m.primaryIMAPClient()
+}
+
+func (m Model) presendIMAPClient() *imap.Client {
+	return m.sentDraftsIMAPClient()
+}
+
 func (m *Model) applyEditedFrom(from string) {
 	if idx := m.matchFromAddress(from); idx >= 0 {
 		m.presendFromI = idx
@@ -4817,7 +4828,6 @@ func (m *Model) applyFilter() tea.Cmd {
 		titleOf = m.merges.TitleOf
 	}
 	return setEmails(&m.inbox, filtered, m.markedUIDs, m.spyPixelKeys, m.shouldPrefixFolderInSubject(), m.sortField, m.sortReverse, noThread, titleOf)
->>>>>>> main
 }
 
 // handleChord dispatches two-key sequences (g<x>, M<x>, space<x>).
