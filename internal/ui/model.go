@@ -6266,7 +6266,7 @@ func (m Model) updatePresend(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "d":
 		// Save to Drafts without sending.
-		return m, m.saveDraftCmd(m.presendIMAPClient(), m.presendFrom(), ps.to, ps.cc, ps.bcc, ps.subject, ps.body, m.attachments)
+		return m, m.saveDraftCmd(m.activeAccount(), m.presendFrom(), ps.to, ps.cc, ps.bcc, ps.subject, ps.body, m.attachments)
 	case "l":
 		// Send later: prompt for a delivery time. The message is queued in
 		// the Scheduled folder and delivered by the headless daemon.
